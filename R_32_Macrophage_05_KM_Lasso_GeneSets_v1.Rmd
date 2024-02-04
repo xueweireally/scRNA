@@ -1,0 +1,104 @@
+---
+title: "TCGA GSVA LUAD OS KM curve"
+author: "Wei"
+date: '2023-11-13'
+output:
+html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+# 1. loading library
+```{r}
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(stringr))
+suppressPackageStartupMessages(library(survival))
+suppressPackageStartupMessages(library(survminer))
+suppressPackageStartupMessages(library(ggplot2))
+options(dplyr.summarise.inform = FALSE)
+
+```
+
+# 2. loading data
+```{r}
+LUAD.risk_group <- read.csv("/Users/xuewei/ZxProjects/CRC/2023_GSE231559/01_preprocessing/32_Macrophage_Figures/Rds_02_Lasso_Cox_04_risk_group_surv.txt", sep = "\t", h = T, check.names = F)
+
+```
+
+# 3. Data process
+## join Group type and clinical
+```{r}
+OS_Sig1 <- LUAD.risk_group %>% 
+  select(sample_id, time, status, risk_score, risk_group) %>% 
+  mutate(Status = ifelse(risk_score >= quantile(LUAD.risk_group$risk_score, 0.5), "High", "Low")) %>% 
+  rename(OS.status = status, OS = time) %>% 
+  distinct()
+OS_Sig1 <- na.omit(OS_Sig1)
+
+```
+
+# 4. select gene set and OS
+## 4.1 Sig1 Overall Survival
+```{r}
+fit <- survfit(Surv(OS, OS.status) ~ Status, data = OS_Sig1)
+sdiff <- survdiff(Surv(OS, OS.status) ~ Status, data=OS_Sig1)
+HR = (sdiff$obs[1]/sdiff$exp[1])/(sdiff$obs[2]/sdiff$exp[2])
+up95 = exp(log(HR) + qnorm(0.975)*sqrt(1/sdiff$exp[2]+1/sdiff$exp[1]))
+low95 = exp(log(HR) - qnorm(0.975)*sqrt(1/sdiff$exp[2]+1/sdiff$exp[1])) 
+
+pdf("20231111_05_Sig1_OS_v1.pdf", height=6, width=6)
+p1 <- ggsurvplot(fit,
+           data = OS_Sig1,
+           pval = TRUE, pval.size = 5,
+           surv.scale = c("percent"),
+           conf.int = FALSE,
+           risk.table = TRUE, # Add risk table
+           tables.y.text = FALSE,
+           tables.height = 0.15,
+           risk.table.col = 'black',
+           #risk.table.col = "strata", # Change risk table color by groups
+           # surv.median.line = "hv", # Specify median survival
+           # palette = c("#e42c64","#1F6ED4"),
+           palette = c("#ED0100", "#00468B"),
+           tables.theme = theme_cleantable(),
+           legend = c(0.75, 0.75),
+           legend.title = 'Status',
+           legend.labs = c('High', 'Low'),
+           #break.x.by = 2000,
+           xlab = 'Time in days',
+           ylab = 'Overall Survival (%)',
+           font.x = c(14, "bold", "black"),
+           font.y = c(14, "bold", "black"),
+           font.legend = c(12, "bold", "black"),
+           pval.coord = c(0.1, 0.1),
+           #ggtheme = theme_bw() #ggtheme = , # Change ggplot2 theme
+           )
+p1$plot = p1$plot + ggplot2::annotate("text", x = -Inf, y = -Inf, hjust = -0.15, vjust = -2, label = paste("HR:",round((sdiff$obs[1]/sdiff$exp[1])/(sdiff$obs[2]/sdiff$exp[2]),2),"[",round(exp(log(HR) - qnorm(0.95)*sqrt(1/sdiff$exp[2]+1/sdiff$exp[1])),2),"-",round(exp(log(HR) + qnorm(0.95)*sqrt(1/sdiff$exp[2]+1/sdiff$exp[1])),2),"]"),size = 5)
+p1
+dev.off()
+
+```
+
+## 4.4 Sig1 OncoScience
+```{r}
+library(OncoScience)
+library(dplyr)
+col_1 = c("deepskyblue3","lightpink1","orangered1","red3")
+pdf("20231111_05_Sig1_OS_v2_OncoScience.pdf", height=6, width=6)
+plotutil_survival_standard(
+  df_clicor = OS_Sig1 %>% 
+  mutate(Status=factor(Status, levels=c('Low', 'High'))),
+  surfit_col = "Status",
+  survival_col = "OS",
+  col=col_1[c(1,3)],
+  #color_pal = ggsci::pal_jco()(2),
+  time_unit = "days",
+  legend_pos = c(0.85, 0.1)
+)
+dev.off()
+
+```
+

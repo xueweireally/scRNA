@@ -1,0 +1,133 @@
+---
+title: "TCGA GDC LUAD Table 1"
+author: "Wei"
+date: '2023-11-11'
+output:
+html_document: default
+reference1: https://www.jianshu.com/p/6343b3f48be4
+reference2: https://www.jianshu.com/p/b8fab09f12be/
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+# 1. Loading library
+```{r}
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(cowplot))
+suppressPackageStartupMessages(library(ggplotify))
+suppressPackageStartupMessages(library(gridExtra))
+suppressPackageStartupMessages(library(pheatmap))
+suppressPackageStartupMessages(library(tidyverse))
+options(dplyr.summarise.inform = FALSE)
+
+```
+
+# 2. Loading data
+```{r}
+# risk score
+LUAD.all <- read.table("/Users/xuewei/ZxProjects/CRC/2023_GSE231559/01_preprocessing/32_Macrophage_Figures/Rds_02_Lasso_Cox_04_risk_group_surv.txt", sep = "\t", h = T, check.names = F)
+LUAD.lasso_res <- read.table("/Users/xuewei/ZxProjects/CRC/2023_GSE231559/01_preprocessing/32_Macrophage_Figures/Rds_02_Lasso_Cox_02_lasso_res.txt", sep = "\t", h = T, check.names = F)
+
+```
+
+# 3. Data process [clinical information]
+```{r}
+# LUAD.raining <- as.data.frame(data.table::transpose(LUAD.risk_score.training, keep.names = "id", make.names = 1))
+# LUAD.raining <- LUAD.raining %>% column_to_rownames(var="id")
+
+riskScore_dat <- LUAD.all %>% 
+  arrange(risk_score) %>% 
+  mutate(Rank = 1:length(sample_id)) %>% 
+  select(Rank, risk_score, risk_group) %>% 
+  rename(Group = risk_group, riskScore = risk_score) %>% 
+  mutate(Group = ifelse(Group=='high_risk', 'High', 'Low'))
+  # mutate(`Risk score`=riskScore) %>% 
+  # mutate(`Patients (Rankinf of risk score)`=Rank)
+
+OS_dat <- LUAD.all %>% 
+  arrange(risk_score) %>% 
+  mutate(Rank = 1:length(sample_id)) %>% 
+  select(Rank, time, status, risk_group) %>% 
+  rename(OS = time, OS.status = status, Group = risk_group) %>% 
+  mutate(OS.status = ifelse(OS.status=='0', 'Alive', 'Death')) %>% 
+  mutate(Group = ifelse(Group=='high_risk', 'High', 'Low'))
+
+exp_dat <- LUAD.all %>% 
+  arrange(risk_score) %>% 
+  select(LUAD.lasso_res$gene)
+
+```
+
+# 4. plot
+## 4.1 plot.riskScore
+```{r}
+plot.riskScore <- 
+  ggplot(riskScore_dat, aes(x=Rank, y=riskScore))+
+  geom_point(aes(color=Group))+
+  scale_colour_manual(values = c("#ED0100", "#00468B"))+
+  theme_bw()+
+  geom_hline(yintercept=median(riskScore_dat$riskScore), colour="black", linetype="dotted", size=0.8)+
+  geom_vline(xintercept=sum(riskScore_dat$Group=="Low"), colour="black", linetype="dotted",size=0.8)+
+  theme(legend.title=element_blank(), legend.position = "right")+
+  labs(title = "") +
+  labs(x="Patient (increasing risk score)", y="Risk score")+
+  theme(axis.line=element_line(size=0.5,colour="black")) +
+  theme(plot.title = element_text(hjust = 0.5, face="bold", color="black", size=10)) +
+  theme(axis.ticks=element_line(size=0.5,colour="black"), axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=10, angle=0),
+        axis.text.y = element_text(face="bold", color="black", size=10),
+        axis.title.x = element_text(face="bold", color="black", size=10),
+        axis.title.y = element_text(face="bold", color="black", size=10))
+
+```
+
+## 4.2 plot.OS
+```{r}
+plot.OS <- ggplot(OS_dat, aes(x=Rank, y=OS))+
+  geom_point(aes(col=OS.status))+
+  theme_bw()+
+  scale_colour_manual(values = c("#28AF63", "#9068be"))+
+  labs(x="Patient (increasing risk score)",y="Survival time (days)")+
+  geom_vline(xintercept = sum(OS_dat$Group=="Low"),colour="black", linetype="dotted",size=0.8)+
+  theme(legend.title=element_blank(), legend.position = "right")+
+  labs(title = "") +
+  theme(axis.line=element_line(size=0.5,colour="black")) +
+  theme(plot.title = element_text(hjust = 0.5, face="bold", color="black", size=10)) +
+  theme(axis.ticks=element_line(size=0.5,colour="black"), axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=10, angle=0),
+        axis.text.y = element_text(face="bold", color="black", size=10),
+        axis.title.x = element_text(face="bold", color="black", size=10),
+        axis.title.y = element_text(face="bold", color="black", size=10))
+
+```
+
+## 4.3 plot.heatmap
+```{r}
+mycolors <- colorRampPalette(c("#30BCED", "#FFFFFF", "#FF5A09"), bias = 1.2)(100)
+tmp=t(scale(exp_dat))
+tmp[tmp > 1] = 1
+tmp[tmp < -1] = -1
+plot.pheatmap <- pheatmap(tmp, col = mycolors, show_colnames = F, cluster_cols = F)
+
+```
+
+## 4.4 join plot
+```{r}
+# plot_grid
+plot_grid(plot.riskScore, plot.OS, plot.pheatmap$gtable,
+          labels = c("A", "B","C"),
+          align = 'v', ncol = 1)
+
+# grid.arrange
+plots = list(plot.riskScore, plot.OS, as.ggplot(as.grob(plot.pheatmap)))
+lay1 = rbind(c(rep(1,7)),c(rep(2,7)),c(rep(3,7)))
+
+pdf("20231111_06_riskScore_distribution_v1.pdf", height=7, width=7)
+grid.arrange(grobs = plots, layout_matrix = lay1, heigths = c(2,3,2), weights=c(10,10,10))
+dev.off()
+
+```
+

@@ -1,0 +1,91 @@
+ ---
+title: "diff clusters in Macrophage cell"
+author: "Wei"
+date: '2023-11-13'
+output:
+html_document: default
+---
+
+# 1. loading library and function
+```{r}
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(forestplot))
+suppressPackageStartupMessages(library(readxl))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(tibble))
+suppressPackageStartupMessages(library(tidyr))
+suppressPackageStartupMessages(library(readr))
+options(dplyr.summarise.inform = FALSE)
+
+```
+
+# 2. Loading data
+```{r}
+lasso_res <- read.csv("/Users/xuewei/ZxProjects/CRC/2023_GSE231559/01_preprocessing/32_Macrophage_Figures/Rds_02_Lasso_Cox_03_singleGeneCox.txt", sep = "\t", h = T, check.names = F)
+# lasso_res <- readxl::read_xlsx('/Users/xuewei/ZeroData/scripts/R_BNR/Cell_death_Rscript/lasso_HR.xlsx')
+
+lasso_res <- lasso_res %>%
+  filter(gene != "OS")
+
+```
+
+# 3. plot function input
+```{r}
+tabletext <- cbind(
+  c("", lasso_res$gene),
+  c("coefficient", sprintf("%.3f", as.double(lasso_res$coef))),
+  c("pvalue", sprintf("%.3f", as.double(lasso_res$PValue))),
+  c("HR", sprintf("%.3f", as.double(lasso_res$HR)))
+)
+#修改部分数字，取位数时被round掉
+# tabletext[7,3] <- "<0.001"
+# tabletext[9,3] <- "0.049"
+tabletext[3,3] <- "<0.001"
+tabletext[7,3] <- "<0.001"
+
+cochrane_from_rmeta <- 
+  structure(list(
+    mean  = c(NA, lasso_res$HR %>% as.double()), 
+    lower = c(NA, lasso_res$lower %>% as.double()), 
+    upper = c(NA, lasso_res$upper %>% as.double())
+  ),
+  .Names = c("mean", "lower", "upper"), 
+  row.names = c(NA, -10L), # 修改该参数，9个gene就是10L
+  class = "data.frame")
+
+```
+
+# 4. plot forest
+```{r}
+fp1 <- forestplot(tabletext, 
+                  cochrane_from_rmeta,
+                  new_page = FALSE,
+                  is.summary = c(TRUE, rep(FALSE, 15)), #不同字体展示标题
+                  zero = 1,
+                  colgap = grid::unit(4, "mm"),
+                  line.margin = grid::unit(4, "mm"),
+                  lwd.ci = 3,
+                  ci.vertices = TRUE,
+                  ci.vertices.height = 0.2,
+                  #xlog = TRUE,
+                  # graph.pos = 4, #调整图位于哪一列
+                  # boxsize = 0.25,
+                  txt_gp = forestplot::fpTxtGp(
+                    label = grid::gpar(cex = 0.9, fontface = 'plain'),
+                    ticks = grid::gpar(cex = 0.7),
+                    xlab = grid::gpar(cex = 0.9, fontface = 'bold')
+                  ),
+                  
+                  xlab = "Hazard ratio",
+                  hrzl_lines = list("2" = grid::gpar(lty = 1)), #添加一条水平线
+                  col = forestplot::fpColors(box = "#f46d43",
+                                             lines="#1c61b6",
+                                             summary = "royalblue")
+)
+pdf("20231111_04_Macrophage_forest_v1.pdf", height=6, width=9)
+print(fp1)
+dev.off()
+
+```
+

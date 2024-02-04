@@ -1,0 +1,1675 @@
+---
+title: "Calculate GSVA with hall"
+author: "Wei"
+date: '2023-11-14'
+output:
+html_document: default
+---
+
+# 1. loading library and function
+```{r}
+suppressPackageStartupMessages(library(pacman))
+pacman::p_load(tidyverse,ggpubr,rstatix,ggsci,ggsignif,reshape2)
+suppressPackageStartupMessages(library(clusterProfiler))
+suppressPackageStartupMessages(library(tidyverse))
+options(dplyr.summarise.inform = FALSE)
+
+# source function
+source("/Users/xuewei/ZuDatabase/Rdata/GSVA_pathway/GSVA_function.R")
+
+```
+
+# 2. loading data
+## 2.1 MBPs_list and read.gmt test data
+```{r}
+# MBPs_list 
+MBPs_list <- read_rds('/Users/xuewei/ZuDatabase/Rdata/GSVA_pathway/MBPs_list.Rdata')
+
+# HYPOXIA <- c("HIF1A", "LDHA", "TPI1", "PGK1", "SERPINE1", "PFKP", "SLC2A1", "PGM1", "LOX", "GPI", "GBE1", "ENO1", "GAPDH", "PLAUR", "TGFA", "TGFB1")
+# MBPs_list$HYPOXIA <- HYPOXIA
+# 
+# HALLMARK_HYPOXIA <- c("CCNE1", "CDC6", "HUWE1", "IGF1R", "IL1R2", "NCS1", "NOP2", "P4HA1", "PDCD2L", "SLC2A3", "SNX14", "SNX9", "TNFRSF9", "TNFSF11", "SPP1", "TGFB1")
+# MBPs_list$HALLMARK_HYPOXIA <- HALLMARK_HYPOXIA
+
+```
+
+## 2.2 read kegg gmt
+```{r}
+# h.all.v2023.2.Hs.symbols.gmt
+kegg_hall<-readLines("/Users/xuewei/ZuDatabase/GSEA/h.all.v2023.2.Hs.symbols.gmt")
+kegg_hall_res <- strsplit(kegg_hall, "\t")
+names(kegg_hall_res) <- vapply(kegg_hall_res, function(y) y[1], character(1))
+kegg_hall_res <- lapply(kegg_hall_res, "[", -c(1:2))
+
+# c2.cp.v2023.2.Hs.symbols.gmt
+kegg_cp <- readLines("/Users/xuewei/ZuDatabase/GSEA/c2.cp.v2023.2.Hs.symbols.gmt")
+kegg_cp_res <- strsplit(kegg_cp, "\t")
+names(kegg_cp_res) <- vapply(kegg_cp_res, function(y) y[1], character(1))
+kegg_cp_res <- lapply(kegg_cp_res, "[", -c(1:2))
+
+```
+
+## 2.3 appendList function
+```{r}
+appendList <- function (x, val) 
+{
+    stopifnot(is.list(x), is.list(val))
+    xnames <- names(x)
+    for (v in names(val)) {
+        x[[v]] <- if (v %in% xnames && is.list(x[[v]]) && is.list(val[[v]])) 
+            appendList(x[[v]], val[[v]])
+        else c(x[[v]], val[[v]])
+    }
+    x
+}
+
+kegg_MBPs_hall <- appendList(MBPs_list, kegg_hall_res)
+kegg_MBPs_cp <- appendList(MBPs_list, kegg_cp_res)
+
+```
+
+## 2.4 read TPM group
+```{r}
+# TPM
+expr_data <- read_rds("/Users/xuewei/ZxProjects/CRC/TCGA/01_Data/TCGA-COAD.tpm_clinical.rds")
+# Group
+group_type <- read.table("/Users/xuewei/ZxProjects/CRC/2023_GSE231559/01_preprocessing/32_Macrophage_Figures/Rds_02_Lasso_Cox_04_risk_group_surv.txt", sep = "\t", h = T, check.names = F)
+# Group all (Normal and Tumor)
+Group_sample <- read_rds("/Users/xuewei/ZxProjects/CRC/TCGA/01_Data/TCGA-COAD.group_clinical.rds")
+
+# TPM
+expr_data <- expr_data %>% 
+  rownames_to_column(var="sample")
+expr_data <- as.data.frame(data.table::transpose(expr_data, keep.names = "Gene_symbol", make.names = 1)) %>% 
+  column_to_rownames(var="Gene_symbol")
+
+# Group
+group_type <- group_type %>% 
+  select(sample_id, risk_group) %>% 
+  mutate(Status = str_replace_all(risk_group, "high_risk", "High")) %>% 
+  mutate(Status = str_replace_all(Status, "low_risk", "Low")) %>% 
+  select(sample_id, Status)
+
+# Group_sample
+# Group_sample$pid <- substr(Group_sample$sample,1,15)
+join_sample_type <- Group_sample %>% 
+  select(sample)
+group_type2 <- semi_join(group_type, join_sample_type, by = c("sample_id" = "sample"))
+
+Group_sample <- Group_sample %>% 
+  select(sample, Group) %>% 
+  column_to_rownames(var="sample")
+
+```
+
+# 3. Data process
+## 3.1 expr_data and Group
+```{r}
+# Group only Tumor with OS Status
+Group_tumor_id <- Group_sample %>% 
+  rownames_to_column(var = 'Sample') %>% 
+  filter(str_detect(Group, "Tumor")) %>% 
+  select(Sample)
+# select tumor sample
+expr_data_col <- expr_data %>% 
+  rownames_to_column(var = 'Sample')
+expr_data_col <- as.data.frame(data.table::transpose(expr_data_col, keep.names = "Sample", make.names = 1))
+expr_data_col <- semi_join(expr_data_col, Group_tumor_id, by = c("Sample" = "Sample"))
+expr_data_col <- as.data.frame(data.table::transpose(expr_data_col, keep.names = "Sample", make.names = 1))
+expr_data_col <- expr_data_col %>% 
+  rename(Symbol = Sample)
+
+```
+
+## 3.2 sample id and expression in all group
+```{r}
+Group_all_sid <- group_type2 %>% 
+  select(sample_id) %>% 
+  distinct()
+expr_data_transpose <- as.data.frame(data.table::transpose(expr_data_col, keep.names = "Sample", make.names = 1))
+Group_all_exp <- semi_join(expr_data_transpose, Group_all_sid, c("Sample" = "sample_id"))
+Group_all_exp <- as.data.frame(data.table::transpose(Group_all_exp, keep.names = "Symbol", make.names = 1))
+
+```
+
+## 3.3 expression of all gene for boxplot
+```{r}
+expr_data_transpose <- as.data.frame(data.table::transpose(expr_data_col, keep.names = "Sample", make.names = 1))
+# Group_CREM <- expr_data_transpose %>% select(Sample, CREM) %>%
+#   mutate(Status = case_when(CREM >= quantile(expr_data_transpose$CREM, 0.50) ~ "High",
+#                             CREM < quantile(expr_data_transpose$CREM, 0.50) ~ "Low")) %>%
+#   select(Sample, Status) %>% 
+#   distinct()
+
+Group_all_join <- left_join(expr_data_transpose, group_type, c("Sample" = "sample_id"))
+Group_all_join <- Group_all_join[complete.cases(Group_all_join),]
+
+```
+
+
+# 4. run GSVA and save result
+## 4.1 GSVA of kegg_MBPs_hall
+```{r}
+expr_matrix <- expr_data_col %>% 
+  filter(Symbol %in% unlist(kegg_MBPs_hall)) %>%
+  distinct(Symbol, .keep_all = TRUE) %>% 
+  column_to_rownames(var = 'Symbol')
+res <- gsva_result(expr_matrix, kegg_MBPs_hall)
+res2 <- as.data.frame(t(res)) %>% rownames_to_column(var = 'Sample')
+
+```
+
+## 4.2 save result
+```{r}
+saveRDS(res2, file="Rds_09_GSVA_run_kegg_MBPs_hall_gmt.rds")
+#write.table(res2, file="GSVA_run_KRT_LUAD_TGF_Beta.txt", sep = "\t", quote=F, row.names = F)
+
+```
+
+## 4.3 GSVA of kegg_MBPs_cp
+```{r}
+expr_matrix <- expr_data_col %>% 
+  filter(Symbol %in% unlist(kegg_MBPs_cp)) %>%
+  distinct(Symbol, .keep_all = TRUE) %>% 
+  column_to_rownames(var = 'Symbol')
+res <- gsva_result(expr_matrix, kegg_MBPs_cp)
+res2 <- as.data.frame(t(res)) %>% rownames_to_column(var = 'Sample')
+
+```
+
+## 4.4 save result
+```{r}
+saveRDS(res2, file="Rds_09_GSVA_run_kegg_MBPs_cp_gmt.rds")
+#write.table(res2, file="GSVA_run_KRT_LUAD_TGF_Beta.txt", sep = "\t", quote=F, row.names = F)
+
+```
+
+# 5. calculate GSVA between two groups
+## 5.1 load rds
+```{r}
+kegg_MBPs_hall_gsva <- read_rds('/Users/xuewei/ZxProjects/CRC/2023_GSE231559/01_preprocessing/32_Macrophage_Figures/Rds_09_GSVA_run_kegg_MBPs_hall_gmt.rds')
+kegg_MBPs_cp_gsva <- read_rds('/Users/xuewei/ZxProjects/CRC/2023_GSE231559/01_preprocessing/32_Macrophage_Figures/Rds_09_GSVA_run_kegg_MBPs_cp_gmt.rds')
+
+kegg_hall_group <- group_type2 %>% 
+  select(sample_id, Status) %>% 
+  left_join(kegg_MBPs_hall_gsva, by = c("sample_id" = "Sample"))
+
+kegg_cp_group <- group_type2 %>% 
+  select(sample_id, Status) %>% 
+  left_join(kegg_MBPs_cp_gsva, by = c("sample_id" = "Sample"))
+
+```
+
+## 5.2 Pan-F-TBRS
+```{r}
+kegg_hall_group <- group_type2 %>% 
+  select(sample_id, Status) %>% 
+  left_join(kegg_MBPs_hall_gsva, by = c("sample_id" = "Sample"))
+
+boxplot_GSVA <- kegg_hall_group %>% 
+  select(sample_id, `Pan-F-TBRS`, Status) %>% 
+  mutate(Group = Status) %>% 
+  select(-Status)
+colnames(boxplot_GSVA)[colnames(boxplot_GSVA)=="Pan-F-TBRS"] <- "GSVA"
+summary(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA)
+summary(boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA)
+wilcox.test(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA,boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA)
+
+```
+
+```{r}
+boxplot_GSVA$Group = factor(boxplot_GSVA$Group, levels=c('Low', 'High'))
+
+pdf("20231114_GSVA_Pan-F-TBRS_boxplot_v1.pdf",height=5,width=5)
+ggplot(boxplot_GSVA,aes(x=Group,y=GSVA,color=factor(Group)))+
+  geom_violin(width=0.45)+
+  geom_boxplot(width=0.15)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.41, y=median(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA), label=sprintf("%0.3f", median(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.4, y=median(boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA), label=sprintf("%0.3f", median(boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA)), color = "#dc143c", size = 6)+
+  #scale_y_log10()+
+  # ylim(-0.02, 0.12)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "Pan-F-TBRS")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "GSVA activity")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+## 5.3 EMT1
+```{r}
+kegg_hall_group <- group_type2 %>% 
+  select(sample_id, Status) %>% 
+  left_join(kegg_MBPs_hall_gsva, by = c("sample_id" = "Sample"))
+
+boxplot_GSVA <- kegg_hall_group %>% 
+  select(sample_id, `EMT1`, Status) %>% 
+  mutate(Group = Status) %>% 
+  select(-Status)
+colnames(boxplot_GSVA)[colnames(boxplot_GSVA)=="EMT1"] <- "GSVA"
+summary(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA)
+summary(boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA)
+wilcox.test(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA,boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA)
+
+```
+
+```{r}
+boxplot_GSVA$Group = factor(boxplot_GSVA$Group, levels=c('Low', 'High'))
+
+pdf("20231114_GSVA_EMT1_boxplot_v1.pdf",height=5,width=5)
+ggplot(boxplot_GSVA,aes(x=Group,y=GSVA,color=factor(Group)))+
+  geom_violin(width=0.45)+
+  geom_boxplot(width=0.15)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.41, y=median(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA), label=sprintf("%0.3f", median(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.4, y=median(boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA), label=sprintf("%0.3f", median(boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA)), color = "#dc143c", size = 6)+
+  #scale_y_log10()+
+  # ylim(-0.02, 0.12)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "EMT1")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "GSVA activity")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 5.4 EMT2
+```{r}
+kegg_hall_group <- group_type2 %>% 
+  select(sample_id, Status) %>% 
+  left_join(kegg_MBPs_hall_gsva, by = c("sample_id" = "Sample"))
+
+boxplot_GSVA <- kegg_hall_group %>% 
+  select(sample_id, `EMT2`, Status) %>% 
+  mutate(Group = Status) %>% 
+  select(-Status)
+colnames(boxplot_GSVA)[colnames(boxplot_GSVA)=="EMT2"] <- "GSVA"
+summary(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA)
+summary(boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA)
+wilcox.test(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA,boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA)
+
+```
+
+```{r}
+boxplot_GSVA$Group = factor(boxplot_GSVA$Group, levels=c('Low', 'High'))
+
+pdf("20231114_GSVA_EMT2_boxplot_v1.pdf",height=5,width=5.2)
+ggplot(boxplot_GSVA,aes(x=Group,y=GSVA,color=factor(Group)))+
+  geom_violin(width=0.45)+
+  geom_boxplot(width=0.15)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.43, y=median(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA), label=sprintf("%0.3f", median(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.42, y=median(boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA), label=sprintf("%0.3f", median(boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA)), color = "#dc143c", size = 6)+
+  #scale_y_log10()+
+  # ylim(-0.02, 0.12)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "EMT2")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "GSVA activity")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 5.5 EMT3
+```{r}
+kegg_hall_group <- group_type2 %>% 
+  select(sample_id, Status) %>% 
+  left_join(kegg_MBPs_hall_gsva, by = c("sample_id" = "Sample"))
+
+boxplot_GSVA <- kegg_hall_group %>% 
+  select(sample_id, `EMT3`, Status) %>% 
+  mutate(Group = Status) %>% 
+  select(-Status)
+colnames(boxplot_GSVA)[colnames(boxplot_GSVA)=="EMT3"] <- "GSVA"
+summary(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA)
+summary(boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA)
+wilcox.test(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA,boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA)
+
+```
+
+```{r}
+boxplot_GSVA$Group = factor(boxplot_GSVA$Group, levels=c('Low', 'High'))
+
+pdf("20231114_GSVA_EMT3_boxplot_v1.pdf",height=5,width=5.3)
+ggplot(boxplot_GSVA,aes(x=Group,y=GSVA,color=factor(Group)))+
+  geom_violin(width=0.45)+
+  geom_boxplot(width=0.15)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.42, y=median(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA), label=sprintf("%0.3f", median(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.42, y=median(boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA), label=sprintf("%0.3f", median(boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA)), color = "#dc143c", size = 6)+
+  #scale_y_log10()+
+  # ylim(-0.02, 0.12)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "EMT3")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "GSVA activity")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 5.6 WNT target
+```{r}
+kegg_hall_group <- group_type2 %>% 
+  select(sample_id, Status) %>% 
+  left_join(kegg_MBPs_hall_gsva, by = c("sample_id" = "Sample"))
+
+boxplot_GSVA <- kegg_hall_group %>% 
+  select(sample_id, `WNT target`, Status) %>% 
+  mutate(Group = Status) %>% 
+  select(-Status)
+colnames(boxplot_GSVA)[colnames(boxplot_GSVA)=="WNT target"] <- "GSVA"
+summary(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA)
+summary(boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA)
+wilcox.test(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA,boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA)
+
+```
+
+```{r}
+boxplot_GSVA$Group = factor(boxplot_GSVA$Group, levels=c('Low', 'High'))
+
+pdf("20231114_GSVA_WNT_target_boxplot_v1.pdf",height=5,width=5)
+ggplot(boxplot_GSVA,aes(x=Group,y=GSVA,color=factor(Group)))+
+  geom_violin(width=0.45)+
+  geom_boxplot(width=0.15)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.41, y=median(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA), label=sprintf("%0.3f", median(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.4, y=median(boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA), label=sprintf("%0.3f", median(boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA)), color = "#dc143c", size = 6)+
+  #scale_y_log10()+
+  # ylim(-0.02, 0.12)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "WNT target")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "GSVA activity")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 5.6 HALLMARK_HYPOXIA
+```{r}
+kegg_hall_group <- group_type2 %>% 
+  select(sample_id, Status) %>% 
+  left_join(kegg_MBPs_hall_gsva, by = c("sample_id" = "Sample"))
+
+boxplot_GSVA <- kegg_hall_group %>% 
+  select(sample_id, `HALLMARK_HYPOXIA`, Status) %>% 
+  mutate(Group = Status) %>% 
+  select(-Status)
+colnames(boxplot_GSVA)[colnames(boxplot_GSVA)=="HALLMARK_HYPOXIA"] <- "GSVA"
+summary(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA)
+summary(boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA)
+wilcox.test(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA,boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA)
+
+```
+
+```{r}
+boxplot_GSVA$Group = factor(boxplot_GSVA$Group, levels=c('Low', 'High'))
+
+pdf("20231114_GSVA_HALLMARK_HYPOXIA_boxplot_v1.pdf",height=5,width=5)
+ggplot(boxplot_GSVA,aes(x=Group,y=GSVA,color=factor(Group)))+
+  geom_violin(width=0.45)+
+  geom_boxplot(width=0.15)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.41, y=median(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA), label=sprintf("%0.3f", median(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.4, y=median(boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA), label=sprintf("%0.3f", median(boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA)), color = "#dc143c", size = 6)+
+  #scale_y_log10()+
+  # ylim(-0.02, 0.12)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "HALLMARK_HYPOXIA")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "GSVA activity")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 5.8 HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION target signature genes to MBPs_list form GSEA
+```{r}
+boxplot_GSVA <- kegg_hall_group %>% 
+  select(sample_id, `HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION`, Status) %>% 
+  mutate(Group = Status) %>% 
+  select(-Status)
+colnames(boxplot_GSVA)[colnames(boxplot_GSVA)=="HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION"] <- "GSVA"
+summary(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA)
+summary(boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA)
+wilcox.test(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA,boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA)
+
+```
+
+```{r}
+boxplot_GSVA$Group = factor(boxplot_GSVA$Group, levels=c('Low', 'High'))
+
+pdf("20231114_GSVA_HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION_boxplot_v1.pdf",height=5,width=5)
+ggplot(boxplot_GSVA,aes(x=Group,y=GSVA,color=factor(Group)))+
+  geom_violin(width=0.45)+
+  geom_boxplot(width=0.15)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.42, y=median(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA), label=sprintf("%0.3f", median(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.40, y=median(boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA), label=sprintf("%0.3f", median(boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA)), color = "#dc143c", size = 6)+
+  # scale_y_log10()+
+  # ylim(-0.05, 0.25)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "Hallmark EMT")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "GSVA activity")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 5.9 HALLMARK_TGF_BETA_SIGNALING target signature genes to MBPs_list form GSEA
+```{r}
+boxplot_GSVA <- kegg_hall_group %>% 
+  select(sample_id, `HALLMARK_TGF_BETA_SIGNALING`, Status) %>% 
+  mutate(Group = Status) %>% 
+  select(-Status)
+colnames(boxplot_GSVA)[colnames(boxplot_GSVA)=="HALLMARK_TGF_BETA_SIGNALING"] <- "GSVA"
+summary(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA)
+summary(boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA)
+wilcox.test(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA,boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA)
+
+```
+
+```{r}
+boxplot_GSVA$Group = factor(boxplot_GSVA$Group, levels=c('Low', 'High'))
+
+pdf("20231114_GSVA_HALLMARK_TGF_BETA_SIGNALING_boxplot_v1.pdf",height=5,width=5)
+ggplot(boxplot_GSVA,aes(x=Group,y=GSVA,color=factor(Group)))+
+  geom_violin(width=0.45)+
+  geom_boxplot(width=0.15)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.42, y=median(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA), label=sprintf("%0.3f", median(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.42, y=median(boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA), label=sprintf("%0.3f", median(boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA)), color = "#dc143c", size = 6)+
+  # scale_y_log10()+
+  # ylim(-0.05, 0.25)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "TGF_BETA_SIGNALING")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "GSVA activity")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 5.10 HALLMARK_NOTCH_SIGNALING target signature genes to MBPs_list form GSEA
+```{r}
+boxplot_GSVA <- kegg_hall_group %>% 
+  select(sample_id, `HALLMARK_NOTCH_SIGNALING`, Status) %>% 
+  mutate(Group = Status) %>% 
+  select(-Status)
+colnames(boxplot_GSVA)[colnames(boxplot_GSVA)=="HALLMARK_NOTCH_SIGNALING"] <- "GSVA"
+summary(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA)
+summary(boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA)
+wilcox.test(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA,boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA)
+
+```
+
+```{r}
+boxplot_GSVA$Group = factor(boxplot_GSVA$Group, levels=c('Low', 'High'))
+
+pdf("20231114_GSVA_HALLMARK_NOTCH_SIGNALING_boxplot_v1.pdf",height=5,width=5)
+ggplot(boxplot_GSVA,aes(x=Group,y=GSVA,color=factor(Group)))+
+  geom_violin(width=0.45)+
+  geom_boxplot(width=0.15)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.42, y=median(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA), label=sprintf("%0.3f", median(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.40, y=median(boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA), label=sprintf("%0.3f", median(boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA)), color = "#dc143c", size = 6)+
+  # scale_y_log10()+
+  # ylim(-0.05, 0.25)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "HALLMARK_NOTCH_SIGNALING")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "GSVA activity")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 5.11 HALLMARK_MTORC1_SIGNALING target signature genes to MBPs_list form GSEA
+```{r}
+boxplot_GSVA <- kegg_hall_group %>% 
+  select(sample_id, `HALLMARK_MTORC1_SIGNALING`, Status) %>% 
+  mutate(Group = Status) %>% 
+  select(-Status)
+colnames(boxplot_GSVA)[colnames(boxplot_GSVA)=="HALLMARK_MTORC1_SIGNALING"] <- "GSVA"
+summary(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA)
+summary(boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA)
+wilcox.test(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA,boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA)
+
+```
+
+```{r}
+boxplot_GSVA$Group = factor(boxplot_GSVA$Group, levels=c('Low', 'High'))
+
+pdf("20231114_GSVA_HALLMARK_MTORC1_SIGNALING_boxplot_v1.pdf",height=5,width=5)
+ggplot(boxplot_GSVA,aes(x=Group,y=GSVA,color=factor(Group)))+
+  geom_violin(width=0.45)+
+  geom_boxplot(width=0.15)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.42, y=median(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA), label=sprintf("%0.3f", median(boxplot_GSVA[boxplot_GSVA$Group=="Low",]$GSVA)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.40, y=median(boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA), label=sprintf("%0.3f", median(boxplot_GSVA[boxplot_GSVA$Group=="High",]$GSVA)), color = "#dc143c", size = 6)+
+  # scale_y_log10()+
+  # ylim(-0.05, 0.25)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "HALLMARK_MTORC1_SIGNALING")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "GSVA activity")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+
+# 6. calculate gene expression between low and high groups of all pathway signature genes
+## 6.1 gene expression of HALLMARK_HYPOXIA signature genes
+```{r}
+HALLMARK_HYPOXIA_gid <- kegg_hall_res[["HALLMARK_HYPOXIA"]] %>% 
+  as.data.frame()
+colnames(HALLMARK_HYPOXIA_gid)[colnames(HALLMARK_HYPOXIA_gid)=="."] <- "Gene_symbol"
+HALLMARK_HYPOXIA_exp <- semi_join(Group_all_exp, HALLMARK_HYPOXIA_gid, c("Symbol" = "Gene_symbol"))
+HALLMARK_HYPOXIA_boxplot <- as.data.frame(data.table::transpose(HALLMARK_HYPOXIA_exp, keep.names = "Sample", make.names = 1))
+HALLMARK_HYPOXIA_boxplot <- left_join(group_type2, HALLMARK_HYPOXIA_boxplot, by = c("sample_id" = "Sample")) %>% 
+  mutate(Group = Status) %>% 
+  select(sample_id, Group, HS3ST1:HEXA)
+
+```
+
+## 6.2 facet_wrap boxplot
+```{r}
+HALLMARK_HYPOXIA_boxplot2 <- HALLMARK_HYPOXIA_boxplot %>% 
+  gather(GeneSymbol, TPM, HS3ST1:HEXA)
+
+HALLMARK_HYPOXIA_boxplot2$Group = factor(HALLMARK_HYPOXIA_boxplot2$Group, levels=c('Low', 'High'))
+
+pdf("20231114_HALLMARK_HYPOXIA_facet_wrap_full_v1.pdf",height=60,width=12)
+ggplot(HALLMARK_HYPOXIA_boxplot2, aes(x=Group, y=TPM, color=Group)) +
+  facet_wrap(~GeneSymbol, nrow=20, strip.position = "top") +
+  geom_boxplot(width=0.3)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level = F,
+              test = "wilcox.test",
+              textsize=3,
+              step_increase=0.1,
+              color="#000000")+
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.1)))+
+  scale_fill_manual(values=c("#999999","#fdc4b6"))+
+  scale_color_manual(values=c("#666666","#ca3e47"))+
+  theme_minimal()+theme(legend.position="NA")+
+  theme(strip.text = element_text(face="bold", color="#ca3e47", size=10))+
+  theme(legend.title=element_blank())+
+  labs(title = "TCGA-COAD") +
+  xlab(label = "")+ylab(label = "Expression log2(TPM+1)") +
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(axis.line=element_line(size=0.5,colour="black")) +
+  theme(plot.title = element_text(hjust = 0.5, face="bold", color="black", size=15)) +
+  theme(axis.ticks=element_line(size=0.5,colour="black"), axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold", color="black", size=15))
+dev.off()
+
+```
+
+## 6.3 gene expression of HALLMARK_E2F_TARGETS signature genes
+```{r}
+E2F_TARGETS_gid <- kegg_hall_res[["HALLMARK_E2F_TARGETS"]] %>% 
+  as.data.frame()
+colnames(E2F_TARGETS_gid)[colnames(E2F_TARGETS_gid)=="."] <- "Gene_symbol"
+E2F_TARGETS_exp <- semi_join(Group_all_exp, E2F_TARGETS_gid, c("Symbol" = "Gene_symbol"))
+E2F_TARGETS_boxplot <- as.data.frame(data.table::transpose(E2F_TARGETS_exp, keep.names = "Sample", make.names = 1))
+E2F_TARGETS_boxplot <- left_join(group_type, E2F_TARGETS_boxplot, by = c("Sample" = "Sample")) %>% 
+  mutate(Group = Status) %>% 
+  select(Sample, Group, AK2:ZW10)
+
+```
+
+## 6.4 facet_wrap boxplot
+```{r}
+E2F_TARGETS_boxplot2 <- E2F_TARGETS_boxplot %>% 
+  gather(GeneSymbol, TPM, AK2:ZW10)
+
+E2F_TARGETS_boxplot2$Group = factor(E2F_TARGETS_boxplot2$Group, levels=c('Low', 'High'))
+
+pdf("20231114_E2F_TARGETS_facet_wrap_full_v1.pdf",height=60,width=12)
+ggplot(E2F_TARGETS_boxplot2, aes(x=Group, y=TPM, color=Group)) +
+  facet_wrap(~GeneSymbol, nrow=20, strip.position = "top") +
+  geom_boxplot(width=0.3)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level = F,
+              test = "wilcox.test",
+              textsize=3,
+              step_increase=0.1,
+              color="#000000")+
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.1)))+
+  scale_fill_manual(values=c("#999999","#fdc4b6"))+
+  scale_color_manual(values=c("#666666","#ca3e47"))+
+  theme_minimal()+theme(legend.position="NA")+
+  theme(strip.text = element_text(face="bold", color="#ca3e47", size=10))+
+  theme(legend.title=element_blank())+
+  labs(title = "TCGA-COAD") +
+  xlab(label = "")+ylab(label = "Expression log2(TPM+1)") +
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(axis.line=element_line(size=0.5,colour="black")) +
+  theme(plot.title = element_text(hjust = 0.5, face="bold", color="black", size=15)) +
+  theme(axis.ticks=element_line(size=0.5,colour="black"), axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold", color="black", size=15))
+dev.off()
+
+```
+
+## 6.5 gene expression of HALLMARK_INFLAMMATORY_RESPONSE signature genes
+```{r}
+INFLAMMATORY_RESPONSE_gid <- kegg_hall_res[["HALLMARK_INFLAMMATORY_RESPONSE"]] %>% 
+  as.data.frame()
+colnames(INFLAMMATORY_RESPONSE_gid)[colnames(INFLAMMATORY_RESPONSE_gid)=="."] <- "Gene_symbol"
+INFLAMMATORY_RESPONSE_exp <- semi_join(Group_all_exp, INFLAMMATORY_RESPONSE_gid, c("Symbol" = "Gene_symbol"))
+INFLAMMATORY_RESPONSE_boxplot <- as.data.frame(data.table::transpose(INFLAMMATORY_RESPONSE_exp, keep.names = "Sample", make.names = 1))
+INFLAMMATORY_RESPONSE_boxplot <- left_join(group_type, INFLAMMATORY_RESPONSE_boxplot, by = c("Sample" = "Sample")) %>% 
+  mutate(Group = Status) %>% 
+  select(Sample, Group, ABCA1:VIP)
+
+```
+
+## 6.6 facet_wrap boxplot
+```{r}
+INFLAMMATORY_RESPONSE_boxplot2 <- INFLAMMATORY_RESPONSE_boxplot %>% 
+  gather(GeneSymbol, TPM, ABCA1:VIP)
+
+INFLAMMATORY_RESPONSE_boxplot2$Group = factor(INFLAMMATORY_RESPONSE_boxplot2$Group, levels=c('Low', 'High'))
+
+pdf("20231114_INFLAMMATORY_RESPONSE_facet_wrap_full_v1.pdf",height=60,width=12)
+ggplot(INFLAMMATORY_RESPONSE_boxplot2, aes(x=Group, y=TPM, color=Group)) +
+  facet_wrap(~GeneSymbol, nrow=20, strip.position = "top") +
+  geom_boxplot(width=0.3)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level = F,
+              test = "wilcox.test",
+              textsize=3,
+              step_increase=0.1,
+              color="#000000")+
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.1)))+
+  scale_fill_manual(values=c("#999999","#fdc4b6"))+
+  scale_color_manual(values=c("#666666","#ca3e47"))+
+  theme_minimal()+theme(legend.position="NA")+
+  theme(strip.text = element_text(face="bold", color="#ca3e47", size=10))+
+  theme(legend.title=element_blank())+
+  labs(title = "TCGA-COAD") +
+  xlab(label = "")+ylab(label = "Expression log2(TPM+1)") +
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(axis.line=element_line(size=0.5,colour="black")) +
+  theme(plot.title = element_text(hjust = 0.5, face="bold", color="black", size=15)) +
+  theme(axis.ticks=element_line(size=0.5,colour="black"), axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold", color="black", size=15))
+dev.off()
+
+```
+
+## 6.7 gene expression of HALLMARK_NOTCH_SIGNALING signature genes
+```{r}
+NOTCH_SIGNALING_gid <- kegg_hall_res[["HALLMARK_NOTCH_SIGNALING"]] %>% 
+  as.data.frame()
+colnames(NOTCH_SIGNALING_gid)[colnames(NOTCH_SIGNALING_gid)=="."] <- "Gene_symbol"
+NOTCH_SIGNALING_exp <- semi_join(Group_all_exp, NOTCH_SIGNALING_gid, c("Symbol" = "Gene_symbol"))
+NOTCH_SIGNALING_boxplot <- as.data.frame(data.table::transpose(NOTCH_SIGNALING_exp, keep.names = "Sample", make.names = 1))
+NOTCH_SIGNALING_boxplot <- left_join(group_type, NOTCH_SIGNALING_boxplot, by = c("sample_id" = "Sample")) %>% 
+  mutate(Group = Status) %>% 
+  select(sample_id, Group, CUL1:PSENEN)
+
+```
+
+## 6.8 facet_wrap boxplot
+```{r}
+NOTCH_SIGNALING_boxplot2 <- NOTCH_SIGNALING_boxplot %>% 
+  gather(GeneSymbol, TPM, CUL1:PSENEN)
+
+NOTCH_SIGNALING_boxplot2$Group = factor(NOTCH_SIGNALING_boxplot2$Group, levels=c('Low', 'High'))
+
+pdf("20231114_HALLMARK_NOTCH_SIGNALING_facet_wrap_full_v1.pdf",height=12,width=12)
+ggplot(NOTCH_SIGNALING_boxplot2, aes(x=Group, y=TPM, color=Group)) +
+  facet_wrap(~GeneSymbol, nrow=3, strip.position = "top") +
+  geom_boxplot(width=0.3)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level = F,
+              test = "wilcox.test",
+              textsize=3,
+              step_increase=0.1,
+              color="#000000")+
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.1)))+
+  scale_fill_manual(values=c("#999999","#fdc4b6"))+
+  scale_color_manual(values=c("#666666","#ca3e47"))+
+  theme_minimal()+theme(legend.position="NA")+
+  theme(strip.text = element_text(face="bold", color="#ca3e47", size=10))+
+  theme(legend.title=element_blank())+
+  labs(title = "TCGA-COAD") +
+  xlab(label = "")+ylab(label = "Expression log2(TPM+1)") +
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(axis.line=element_line(size=0.5,colour="black")) +
+  theme(plot.title = element_text(hjust = 0.5, face="bold", color="black", size=15)) +
+  theme(axis.ticks=element_line(size=0.5,colour="black"), axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold", color="black", size=15))
+dev.off()
+
+```
+
+## 6.9 gene expression of HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION signature genes
+```{r}
+EMT_gid <- kegg_hall_res[["HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION"]] %>% 
+  as.data.frame()
+colnames(EMT_gid)[colnames(EMT_gid)=="."] <- "Gene_symbol"
+EMT_exp <- semi_join(Group_all_exp, EMT_gid, c("Symbol" = "Gene_symbol"))
+EMT_boxplot <- as.data.frame(data.table::transpose(EMT_exp, keep.names = "Sample", make.names = 1))
+EMT_boxplot <- left_join(group_type, EMT_boxplot, by = c("sample_id" = "Sample")) %>% 
+  mutate(Group = Status) %>% 
+  select(sample_id, Group, ABI3BP:WNT5A)
+
+```
+
+## 6.10 facet_wrap boxplot
+```{r}
+EMT_boxplot2 <- EMT_boxplot %>% 
+  gather(GeneSymbol, TPM, ABI3BP:WNT5A)
+
+EMT_boxplot2$Group = factor(EMT_boxplot2$Group, levels=c('Low', 'High'))
+
+pdf("20231114_HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION_facet_wrap_full_v1.pdf",height=60,width=12)
+ggplot(EMT_boxplot2, aes(x=Group, y=TPM, color=Group)) +
+  facet_wrap(~GeneSymbol, nrow=20, strip.position = "top") +
+  geom_boxplot(width=0.3)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level = F,
+              test = "wilcox.test",
+              textsize=3,
+              step_increase=0.1,
+              color="#000000")+
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.1)))+
+  scale_fill_manual(values=c("#999999","#fdc4b6"))+
+  scale_color_manual(values=c("#666666","#ca3e47"))+
+  theme_minimal()+theme(legend.position="NA")+
+  theme(strip.text = element_text(face="bold", color="#ca3e47", size=10))+
+  theme(legend.title=element_blank())+
+  labs(title = "TCGA-COAD") +
+  xlab(label = "")+ylab(label = "Expression log2(TPM+1)") +
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(axis.line=element_line(size=0.5,colour="black")) +
+  theme(plot.title = element_text(hjust = 0.5, face="bold", color="black", size=15)) +
+  theme(axis.ticks=element_line(size=0.5,colour="black"), axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold", color="black", size=15))
+dev.off()
+
+```
+
+# 7. gene expression between low and high groups
+## 7.1 CCR7 expression between low and high groups
+```{r}
+boxplot_expr_CCR7 <- Group_all_join %>% 
+  select(Sample, CCR7, Status) %>% 
+  mutate(Group = Status) %>% 
+  select(Sample, CCR7, Group)
+colnames(boxplot_expr_CCR7)[colnames(boxplot_expr_CCR7)=="CCR7"] <- "FPKM"
+summary(boxplot_expr_CCR7[boxplot_expr_CCR7$Group=="Low",]$FPKM)
+summary(boxplot_expr_CCR7[boxplot_expr_CCR7$Group=="High",]$FPKM)
+wilcox.test(boxplot_expr_CCR7[boxplot_expr_CCR7$Group=="Low",]$FPKM,boxplot_expr_CCR7[boxplot_expr_CCR7$Group=="High",]$FPKM)
+
+```
+
+```{r}
+boxplot_expr_CCR7$Group = factor(boxplot_expr_CCR7$Group, levels=c('Low', 'High'))
+
+pdf("20231114_TPM_CCR7_boxplot_v1.pdf",height=5,width=5)
+ggplot(boxplot_expr_CCR7,aes(x=Group,y=FPKM,color=factor(Group)))+
+  #geom_violin(width=0.45)+
+  geom_boxplot(width=0.3)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.3, y=median(boxplot_expr_CCR7[boxplot_expr_CCR7$Group=="Low",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_CCR7[boxplot_expr_CCR7$Group=="Low",]$FPKM)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.3, y=median(boxplot_expr_CCR7[boxplot_expr_CCR7$Group=="High",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_CCR7[boxplot_expr_CCR7$Group=="High",]$FPKM)), color = "#dc143c", size = 6)+
+  # scale_y_log10()+
+  # ylim(0,6.5)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "CCR7")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "Expression log2(TPM+1)")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 7.2 IL10 expression between low and high groups
+```{r}
+boxplot_expr_IL10 <- Group_all_join %>% 
+  select(Sample, IL10, Status) %>% 
+  mutate(Group = Status) %>% 
+  select(Sample, IL10, Group)
+colnames(boxplot_expr_IL10)[colnames(boxplot_expr_IL10)=="IL10"] <- "FPKM"
+summary(boxplot_expr_IL10[boxplot_expr_IL10$Group=="Low",]$FPKM)
+summary(boxplot_expr_IL10[boxplot_expr_IL10$Group=="High",]$FPKM)
+wilcox.test(boxplot_expr_IL10[boxplot_expr_IL10$Group=="Low",]$FPKM,boxplot_expr_IL10[boxplot_expr_IL10$Group=="High",]$FPKM)
+
+```
+
+```{r}
+boxplot_expr_IL10$Group = factor(boxplot_expr_IL10$Group, levels=c('Low', 'High'))
+
+pdf("20231114_TPM_IL10_boxplot_v1.pdf",height=5,width=5)
+ggplot(boxplot_expr_IL10,aes(x=Group,y=FPKM,color=factor(Group)))+
+  #geom_violin(width=0.45)+
+  geom_boxplot(width=0.3)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.3, y=median(boxplot_expr_IL10[boxplot_expr_IL10$Group=="Low",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_IL10[boxplot_expr_IL10$Group=="Low",]$FPKM)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.3, y=median(boxplot_expr_IL10[boxplot_expr_IL10$Group=="High",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_IL10[boxplot_expr_IL10$Group=="High",]$FPKM)), color = "#dc143c", size = 6)+
+  scale_y_log10()+
+  # ylim(0,8)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "IL10")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "Expression log2(TPM+1)")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 7.3 IL6 expression between low and high groups
+```{r}
+boxplot_expr_IL6 <- Group_all_join %>% 
+  select(Sample, IL6, Status) %>% 
+  mutate(Group = Status) %>% 
+  select(Sample, IL6, Group)
+colnames(boxplot_expr_IL6)[colnames(boxplot_expr_IL6)=="IL6"] <- "FPKM"
+summary(boxplot_expr_IL6[boxplot_expr_IL6$Group=="Low",]$FPKM)
+summary(boxplot_expr_IL6[boxplot_expr_IL6$Group=="High",]$FPKM)
+wilcox.test(boxplot_expr_IL6[boxplot_expr_IL6$Group=="Low",]$FPKM,boxplot_expr_IL6[boxplot_expr_IL6$Group=="High",]$FPKM)
+
+```
+
+```{r}
+boxplot_expr_IL6$Group = factor(boxplot_expr_IL6$Group, levels=c('Low', 'High'))
+
+pdf("20231114_TPM_IL6_boxplot_v1.pdf",height=5,width=5)
+ggplot(boxplot_expr_IL6,aes(x=Group,y=FPKM,color=factor(Group)))+
+  #geom_violin(width=0.45)+
+  geom_boxplot(width=0.3)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.3, y=median(boxplot_expr_IL6[boxplot_expr_IL6$Group=="Low",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_IL6[boxplot_expr_IL6$Group=="Low",]$FPKM)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.3, y=median(boxplot_expr_IL6[boxplot_expr_IL6$Group=="High",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_IL6[boxplot_expr_IL6$Group=="High",]$FPKM)), color = "#dc143c", size = 6)+
+  scale_y_log10()+
+  # ylim(0,6.5)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "IL6")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "Expression log2(TPM+1)")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 7.4 TGFB1 expression between low and high groups
+```{r}
+boxplot_expr_TGFB1 <- Group_all_join %>% 
+  select(Sample, TGFB1, Status) %>% 
+  mutate(Group = Status) %>% 
+  select(Sample, TGFB1, Group)
+colnames(boxplot_expr_TGFB1)[colnames(boxplot_expr_TGFB1)=="TGFB1"] <- "FPKM"
+summary(boxplot_expr_TGFB1[boxplot_expr_TGFB1$Group=="Low",]$FPKM)
+summary(boxplot_expr_TGFB1[boxplot_expr_TGFB1$Group=="High",]$FPKM)
+wilcox.test(boxplot_expr_TGFB1[boxplot_expr_TGFB1$Group=="Low",]$FPKM,boxplot_expr_TGFB1[boxplot_expr_TGFB1$Group=="High",]$FPKM)
+
+```
+
+```{r}
+boxplot_expr_TGFB1$Group = factor(boxplot_expr_TGFB1$Group, levels=c('Low', 'High'))
+
+pdf("20231114_TPM_TGFB1_boxplot_v1.pdf",height=5,width=5)
+ggplot(boxplot_expr_TGFB1,aes(x=Group,y=FPKM,color=factor(Group)))+
+  #geom_violin(width=0.45)+
+  geom_boxplot(width=0.3)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.3, y=median(boxplot_expr_TGFB1[boxplot_expr_TGFB1$Group=="Low",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_TGFB1[boxplot_expr_TGFB1$Group=="Low",]$FPKM)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.3, y=median(boxplot_expr_TGFB1[boxplot_expr_TGFB1$Group=="High",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_TGFB1[boxplot_expr_TGFB1$Group=="High",]$FPKM)), color = "#dc143c", size = 6)+
+  # scale_y_log10()+
+  ylim(2.5,9.5)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "TGFB1")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "Expression log2(TPM+1)")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 7.5 HIF1A expression between low and high groups
+```{r}
+boxplot_expr_HIF1A <- Group_all_join %>% 
+  select(Sample, HIF1A, Status) %>% 
+  mutate(Group = Status) %>% 
+  select(Sample, HIF1A, Group)
+colnames(boxplot_expr_HIF1A)[colnames(boxplot_expr_HIF1A)=="HIF1A"] <- "FPKM"
+summary(boxplot_expr_HIF1A[boxplot_expr_HIF1A$Group=="Low",]$FPKM)
+summary(boxplot_expr_HIF1A[boxplot_expr_HIF1A$Group=="High",]$FPKM)
+wilcox.test(boxplot_expr_HIF1A[boxplot_expr_HIF1A$Group=="Low",]$FPKM,boxplot_expr_HIF1A[boxplot_expr_HIF1A$Group=="High",]$FPKM)
+
+```
+
+```{r}
+boxplot_expr_HIF1A$Group = factor(boxplot_expr_HIF1A$Group, levels=c('Low', 'High'))
+
+pdf("20231114_TPM_HIF1A_boxplot_v1.pdf",height=5,width=5)
+ggplot(boxplot_expr_HIF1A,aes(x=Group,y=FPKM,color=factor(Group)))+
+  #geom_violin(width=0.45)+
+  geom_boxplot(width=0.3)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.3, y=median(boxplot_expr_HIF1A[boxplot_expr_HIF1A$Group=="Low",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_HIF1A[boxplot_expr_HIF1A$Group=="Low",]$FPKM)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.3, y=median(boxplot_expr_HIF1A[boxplot_expr_HIF1A$Group=="High",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_HIF1A[boxplot_expr_HIF1A$Group=="High",]$FPKM)), color = "#dc143c", size = 6)+
+  # scale_y_log10()+
+  # ylim(0,6)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "HIF1A")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "Expression log2(TPM+1)")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 7.6 CREM expression between low and high groups
+```{r}
+boxplot_expr_CREM <- Group_all_join %>% 
+  select(Sample, CREM, Status) %>% 
+  mutate(Group = Status) %>% 
+  select(Sample, CREM, Group)
+colnames(boxplot_expr_CREM)[colnames(boxplot_expr_CREM)=="CREM"] <- "FPKM"
+summary(boxplot_expr_CREM[boxplot_expr_CREM$Group=="Low",]$FPKM)
+summary(boxplot_expr_CREM[boxplot_expr_CREM$Group=="High",]$FPKM)
+wilcox.test(boxplot_expr_CREM[boxplot_expr_CREM$Group=="Low",]$FPKM,boxplot_expr_CREM[boxplot_expr_CREM$Group=="High",]$FPKM)
+
+```
+
+```{r}
+boxplot_expr_CREM$Group = factor(boxplot_expr_CREM$Group, levels=c('Low', 'High'))
+
+pdf("20231114_TPM_CREM_boxplot_v1.pdf",height=5,width=5)
+ggplot(boxplot_expr_CREM,aes(x=Group,y=FPKM,color=factor(Group)))+
+  #geom_violin(width=0.45)+
+  geom_boxplot(width=0.3)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.3, y=median(boxplot_expr_CREM[boxplot_expr_CREM$Group=="Low",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_CREM[boxplot_expr_CREM$Group=="Low",]$FPKM)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.3, y=median(boxplot_expr_CREM[boxplot_expr_CREM$Group=="High",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_CREM[boxplot_expr_CREM$Group=="High",]$FPKM)), color = "#dc143c", size = 6)+
+  # scale_y_log10()+
+  # ylim(0,6)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "CREM")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "Expression log2(TPM+1)")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+
+## 7.7 SNAI1 expression between low and high groups
+```{r}
+boxplot_expr_SNAI1 <- Group_all_join %>% 
+  select(Sample, SNAI1, Status) %>% 
+  mutate(Group = Status) %>% 
+  select(Sample, SNAI1, Group)
+colnames(boxplot_expr_SNAI1)[colnames(boxplot_expr_SNAI1)=="SNAI1"] <- "FPKM"
+summary(boxplot_expr_SNAI1[boxplot_expr_SNAI1$Group=="Low",]$FPKM)
+summary(boxplot_expr_SNAI1[boxplot_expr_SNAI1$Group=="High",]$FPKM)
+wilcox.test(boxplot_expr_SNAI1[boxplot_expr_SNAI1$Group=="Low",]$FPKM,boxplot_expr_SNAI1[boxplot_expr_SNAI1$Group=="High",]$FPKM)
+
+```
+
+```{r}
+boxplot_expr_SNAI1$Group = factor(boxplot_expr_SNAI1$Group, levels=c('Low', 'High'))
+
+pdf("20231114_TPM_SNAI1_boxplot_v1.pdf",height=5,width=5)
+ggplot(boxplot_expr_SNAI1,aes(x=Group,y=FPKM,color=factor(Group)))+
+  #geom_violin(width=0.45)+
+  geom_boxplot(width=0.3)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.3, y=median(boxplot_expr_SNAI1[boxplot_expr_SNAI1$Group=="Low",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_SNAI1[boxplot_expr_SNAI1$Group=="Low",]$FPKM)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.3, y=median(boxplot_expr_SNAI1[boxplot_expr_SNAI1$Group=="High",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_SNAI1[boxplot_expr_SNAI1$Group=="High",]$FPKM)), color = "#dc143c", size = 6)+
+  # scale_y_log10()+
+  # ylim(0,6)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "SNAIL (SNAI1)")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "Expression log2(TPM+1)")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 7.8 SNAI2 expression between low and high groups
+```{r}
+boxplot_expr_SNAI2 <- Group_all_join %>% 
+  select(Sample, SNAI2, Status) %>% 
+  mutate(Group = Status) %>% 
+  select(Sample, SNAI2, Group)
+colnames(boxplot_expr_SNAI2)[colnames(boxplot_expr_SNAI2)=="SNAI2"] <- "FPKM"
+summary(boxplot_expr_SNAI2[boxplot_expr_SNAI2$Group=="Low",]$FPKM)
+summary(boxplot_expr_SNAI2[boxplot_expr_SNAI2$Group=="High",]$FPKM)
+wilcox.test(boxplot_expr_SNAI2[boxplot_expr_SNAI2$Group=="Low",]$FPKM,boxplot_expr_SNAI2[boxplot_expr_SNAI2$Group=="High",]$FPKM)
+
+```
+
+```{r}
+boxplot_expr_SNAI2$Group = factor(boxplot_expr_SNAI2$Group, levels=c('Low', 'High'))
+
+pdf("20231114_TPM_SNAI2_boxplot_v1.pdf",height=5,width=5)
+ggplot(boxplot_expr_SNAI2,aes(x=Group,y=FPKM,color=factor(Group)))+
+  #geom_violin(width=0.45)+
+  geom_boxplot(width=0.3)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.3, y=median(boxplot_expr_SNAI2[boxplot_expr_SNAI2$Group=="Low",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_SNAI2[boxplot_expr_SNAI2$Group=="Low",]$FPKM)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.3, y=median(boxplot_expr_SNAI2[boxplot_expr_SNAI2$Group=="High",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_SNAI2[boxplot_expr_SNAI2$Group=="High",]$FPKM)), color = "#dc143c", size = 6)+
+  # scale_y_log10()+
+  # ylim(0,6)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "SLUG (SNAI2)")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "Expression log2(TPM+1)")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 7.9 TWIST1 expression between low and high groups
+```{r}
+boxplot_expr_TWIST1 <- Group_all_join %>% 
+  select(Sample, TWIST1, Status) %>% 
+  mutate(Group = Status) %>% 
+  select(Sample, TWIST1, Group)
+colnames(boxplot_expr_TWIST1)[colnames(boxplot_expr_TWIST1)=="TWIST1"] <- "FPKM"
+summary(boxplot_expr_TWIST1[boxplot_expr_TWIST1$Group=="Low",]$FPKM)
+summary(boxplot_expr_TWIST1[boxplot_expr_TWIST1$Group=="High",]$FPKM)
+wilcox.test(boxplot_expr_TWIST1[boxplot_expr_TWIST1$Group=="Low",]$FPKM,boxplot_expr_TWIST1[boxplot_expr_TWIST1$Group=="High",]$FPKM)
+
+```
+
+```{r}
+boxplot_expr_TWIST1$Group = factor(boxplot_expr_TWIST1$Group, levels=c('Low', 'High'))
+
+pdf("20231114_TPM_TWIST1_boxplot_v1.pdf",height=5,width=5)
+ggplot(boxplot_expr_TWIST1,aes(x=Group,y=FPKM,color=factor(Group)))+
+  #geom_violin(width=0.45)+
+  geom_boxplot(width=0.3)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.3, y=median(boxplot_expr_TWIST1[boxplot_expr_TWIST1$Group=="Low",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_TWIST1[boxplot_expr_TWIST1$Group=="Low",]$FPKM)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.3, y=median(boxplot_expr_TWIST1[boxplot_expr_TWIST1$Group=="High",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_TWIST1[boxplot_expr_TWIST1$Group=="High",]$FPKM)), color = "#dc143c", size = 6)+
+  # scale_y_log10()+
+  # ylim(0,6)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "TWIST1")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "Expression log2(TPM+1)")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 7.10 TWIST2 expression between low and high groups
+```{r}
+boxplot_expr_TWIST2 <- Group_all_join %>% 
+  select(Sample, TWIST2, Status) %>% 
+  mutate(Group = Status) %>% 
+  select(Sample, TWIST2, Group)
+colnames(boxplot_expr_TWIST2)[colnames(boxplot_expr_TWIST2)=="TWIST2"] <- "FPKM"
+summary(boxplot_expr_TWIST2[boxplot_expr_TWIST2$Group=="Low",]$FPKM)
+summary(boxplot_expr_TWIST2[boxplot_expr_TWIST2$Group=="High",]$FPKM)
+wilcox.test(boxplot_expr_TWIST2[boxplot_expr_TWIST2$Group=="Low",]$FPKM,boxplot_expr_TWIST2[boxplot_expr_TWIST2$Group=="High",]$FPKM)
+
+```
+
+```{r}
+boxplot_expr_TWIST2$Group = factor(boxplot_expr_TWIST2$Group, levels=c('Low', 'High'))
+
+pdf("20231114_TPM_TWIST2_boxplot_v1.pdf",height=5,width=5)
+ggplot(boxplot_expr_TWIST2,aes(x=Group,y=FPKM,color=factor(Group)))+
+  #geom_violin(width=0.45)+
+  geom_boxplot(width=0.3)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.3, y=median(boxplot_expr_TWIST2[boxplot_expr_TWIST2$Group=="Low",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_TWIST2[boxplot_expr_TWIST2$Group=="Low",]$FPKM)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.3, y=median(boxplot_expr_TWIST2[boxplot_expr_TWIST2$Group=="High",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_TWIST2[boxplot_expr_TWIST2$Group=="High",]$FPKM)), color = "#dc143c", size = 6)+
+  # scale_y_log10()+
+  # ylim(0,6)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "TWIST2")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "Expression log2(TPM+1)")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 7.11 CDH1 expression between low and high groups
+```{r}
+boxplot_expr_CDH1 <- Group_all_join %>% 
+  select(Sample, CDH1, Status) %>% 
+  mutate(Group = Status) %>% 
+  select(Sample, CDH1, Group)
+colnames(boxplot_expr_CDH1)[colnames(boxplot_expr_CDH1)=="CDH1"] <- "FPKM"
+summary(boxplot_expr_CDH1[boxplot_expr_CDH1$Group=="Low",]$FPKM)
+summary(boxplot_expr_CDH1[boxplot_expr_CDH1$Group=="High",]$FPKM)
+wilcox.test(boxplot_expr_CDH1[boxplot_expr_CDH1$Group=="Low",]$FPKM,boxplot_expr_CDH1[boxplot_expr_CDH1$Group=="High",]$FPKM)
+
+```
+
+```{r}
+boxplot_expr_CDH1$Group = factor(boxplot_expr_CDH1$Group, levels=c('Low', 'High'))
+
+pdf("20231114_TPM_CDH1_boxplot_v1.pdf",height=5,width=5)
+ggplot(boxplot_expr_CDH1,aes(x=Group,y=FPKM,color=factor(Group)))+
+  #geom_violin(width=0.45)+
+  geom_boxplot(width=0.3)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.3, y=median(boxplot_expr_CDH1[boxplot_expr_CDH1$Group=="Low",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_CDH1[boxplot_expr_CDH1$Group=="Low",]$FPKM)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.3, y=median(boxplot_expr_CDH1[boxplot_expr_CDH1$Group=="High",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_CDH1[boxplot_expr_CDH1$Group=="High",]$FPKM)), color = "#dc143c", size = 6)+
+  # scale_y_log10()+
+  # ylim(0,6)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "E-cadherin (CDH1)")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "Expression log2(TPM+1)")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 7.12 CDH2 expression between low and high groups
+```{r}
+boxplot_expr_CDH2 <- Group_all_join %>% 
+  select(Sample, CDH2, Status) %>% 
+  mutate(Group = Status) %>% 
+  select(Sample, CDH2, Group)
+colnames(boxplot_expr_CDH2)[colnames(boxplot_expr_CDH2)=="CDH2"] <- "FPKM"
+summary(boxplot_expr_CDH2[boxplot_expr_CDH2$Group=="Low",]$FPKM)
+summary(boxplot_expr_CDH2[boxplot_expr_CDH2$Group=="High",]$FPKM)
+wilcox.test(boxplot_expr_CDH2[boxplot_expr_CDH2$Group=="Low",]$FPKM,boxplot_expr_CDH2[boxplot_expr_CDH2$Group=="High",]$FPKM)
+
+```
+
+```{r}
+boxplot_expr_CDH2$Group = factor(boxplot_expr_CDH2$Group, levels=c('Low', 'High'))
+
+pdf("20231114_TPM_CDH2_boxplot_v1.pdf",height=5,width=5)
+ggplot(boxplot_expr_CDH2,aes(x=Group,y=FPKM,color=factor(Group)))+
+  #geom_violin(width=0.45)+
+  geom_boxplot(width=0.3)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.3, y=median(boxplot_expr_CDH2[boxplot_expr_CDH2$Group=="Low",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_CDH2[boxplot_expr_CDH2$Group=="Low",]$FPKM)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.3, y=median(boxplot_expr_CDH2[boxplot_expr_CDH2$Group=="High",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_CDH2[boxplot_expr_CDH2$Group=="High",]$FPKM)), color = "#dc143c", size = 6)+
+  # scale_y_log10()+
+  # ylim(0,6)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "N-cadherin (CDH2)")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "Expression log2(TPM+1)")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 7.13 VIM expression between low and high groups
+```{r}
+boxplot_expr_VIM <- Group_all_join %>% 
+  select(Sample, VIM, Status) %>% 
+  mutate(Group = Status) %>% 
+  select(Sample, VIM, Group)
+colnames(boxplot_expr_VIM)[colnames(boxplot_expr_VIM)=="VIM"] <- "FPKM"
+summary(boxplot_expr_VIM[boxplot_expr_VIM$Group=="Low",]$FPKM)
+summary(boxplot_expr_VIM[boxplot_expr_VIM$Group=="High",]$FPKM)
+wilcox.test(boxplot_expr_VIM[boxplot_expr_VIM$Group=="Low",]$FPKM,boxplot_expr_VIM[boxplot_expr_VIM$Group=="High",]$FPKM)
+
+```
+
+```{r}
+boxplot_expr_VIM$Group = factor(boxplot_expr_VIM$Group, levels=c('Low', 'High'))
+
+pdf("20231114_TPM_VIM_boxplot_v1.pdf",height=5,width=5)
+ggplot(boxplot_expr_VIM,aes(x=Group,y=FPKM,color=factor(Group)))+
+  #geom_violin(width=0.45)+
+  geom_boxplot(width=0.3)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.3, y=median(boxplot_expr_VIM[boxplot_expr_VIM$Group=="Low",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_VIM[boxplot_expr_VIM$Group=="Low",]$FPKM)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.3, y=median(boxplot_expr_VIM[boxplot_expr_VIM$Group=="High",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_VIM[boxplot_expr_VIM$Group=="High",]$FPKM)), color = "#dc143c", size = 6)+
+  # scale_y_log10()+
+  # ylim(0,6)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "Vimentin (VIM)")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "Expression log2(TPM+1)")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 7.14 FN1 expression between low and high groups
+```{r}
+boxplot_expr_FN1 <- Group_all_join %>% 
+  select(Sample, FN1, Status) %>% 
+  mutate(Group = Status) %>% 
+  select(Sample, FN1, Group)
+colnames(boxplot_expr_FN1)[colnames(boxplot_expr_FN1)=="FN1"] <- "FPKM"
+summary(boxplot_expr_FN1[boxplot_expr_FN1$Group=="Low",]$FPKM)
+summary(boxplot_expr_FN1[boxplot_expr_FN1$Group=="High",]$FPKM)
+wilcox.test(boxplot_expr_FN1[boxplot_expr_FN1$Group=="Low",]$FPKM,boxplot_expr_FN1[boxplot_expr_FN1$Group=="High",]$FPKM)
+
+```
+
+```{r}
+boxplot_expr_FN1$Group = factor(boxplot_expr_FN1$Group, levels=c('Low', 'High'))
+
+pdf("20231114_TPM_FN1_boxplot_v1.pdf",height=5,width=5)
+ggplot(boxplot_expr_FN1,aes(x=Group,y=FPKM,color=factor(Group)))+
+  #geom_violin(width=0.45)+
+  geom_boxplot(width=0.3)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.3, y=median(boxplot_expr_FN1[boxplot_expr_FN1$Group=="Low",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_FN1[boxplot_expr_FN1$Group=="Low",]$FPKM)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.3, y=median(boxplot_expr_FN1[boxplot_expr_FN1$Group=="High",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_FN1[boxplot_expr_FN1$Group=="High",]$FPKM)), color = "#dc143c", size = 6)+
+  # scale_y_log10()+
+  # ylim(0,6)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "Fibronectin (FN1)")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "Expression log2(TPM+1)")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 7.15 ZEB1 expression between low and high groups
+```{r}
+boxplot_expr_ZEB1 <- Group_all_join %>% 
+  select(Sample, ZEB1, Status) %>% 
+  mutate(Group = Status) %>% 
+  select(Sample, ZEB1, Group)
+colnames(boxplot_expr_ZEB1)[colnames(boxplot_expr_ZEB1)=="ZEB1"] <- "FPKM"
+summary(boxplot_expr_ZEB1[boxplot_expr_ZEB1$Group=="Low",]$FPKM)
+summary(boxplot_expr_ZEB1[boxplot_expr_ZEB1$Group=="High",]$FPKM)
+wilcox.test(boxplot_expr_ZEB1[boxplot_expr_ZEB1$Group=="Low",]$FPKM,boxplot_expr_ZEB1[boxplot_expr_ZEB1$Group=="High",]$FPKM)
+
+```
+
+```{r}
+boxplot_expr_ZEB1$Group = factor(boxplot_expr_ZEB1$Group, levels=c('Low', 'High'))
+
+pdf("20231114_TPM_ZEB1_boxplot_v1.pdf",height=5,width=5)
+ggplot(boxplot_expr_ZEB1,aes(x=Group,y=FPKM,color=factor(Group)))+
+  #geom_violin(width=0.45)+
+  geom_boxplot(width=0.3)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.3, y=median(boxplot_expr_ZEB1[boxplot_expr_ZEB1$Group=="Low",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_ZEB1[boxplot_expr_ZEB1$Group=="Low",]$FPKM)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.3, y=median(boxplot_expr_ZEB1[boxplot_expr_ZEB1$Group=="High",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_ZEB1[boxplot_expr_ZEB1$Group=="High",]$FPKM)), color = "#dc143c", size = 6)+
+  # scale_y_log10()+
+  # ylim(0,6)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "ZEB1")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "Expression log2(TPM+1)")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 7.16 ZEB2 expression between low and high groups
+```{r}
+boxplot_expr_ZEB2 <- Group_all_join %>% 
+  select(Sample, ZEB2, Status) %>% 
+  mutate(Group = Status) %>% 
+  select(Sample, ZEB2, Group)
+colnames(boxplot_expr_ZEB2)[colnames(boxplot_expr_ZEB2)=="ZEB2"] <- "FPKM"
+summary(boxplot_expr_ZEB2[boxplot_expr_ZEB2$Group=="Low",]$FPKM)
+summary(boxplot_expr_ZEB2[boxplot_expr_ZEB2$Group=="High",]$FPKM)
+wilcox.test(boxplot_expr_ZEB2[boxplot_expr_ZEB2$Group=="Low",]$FPKM,boxplot_expr_ZEB2[boxplot_expr_ZEB2$Group=="High",]$FPKM)
+
+```
+
+```{r}
+boxplot_expr_ZEB2$Group = factor(boxplot_expr_ZEB2$Group, levels=c('Low', 'High'))
+
+pdf("20231114_TPM_ZEB2_boxplot_v1.pdf",height=5,width=5)
+ggplot(boxplot_expr_ZEB2,aes(x=Group,y=FPKM,color=factor(Group)))+
+  #geom_violin(width=0.45)+
+  geom_boxplot(width=0.3)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.3, y=median(boxplot_expr_ZEB2[boxplot_expr_ZEB2$Group=="Low",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_ZEB2[boxplot_expr_ZEB2$Group=="Low",]$FPKM)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.3, y=median(boxplot_expr_ZEB2[boxplot_expr_ZEB2$Group=="High",]$FPKM), label=sprintf("%0.2f", median(boxplot_expr_ZEB2[boxplot_expr_ZEB2$Group=="High",]$FPKM)), color = "#dc143c", size = 6)+
+  # scale_y_log10()+
+  # ylim(0,6)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "ZEB2")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "Expression log2(TPM+1)")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+

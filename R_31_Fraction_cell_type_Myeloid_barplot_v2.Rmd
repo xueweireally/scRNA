@@ -1,0 +1,106 @@
+---
+title: "Barplot of batch and annotation"
+author: "Wei"
+date: '2023-12-10'
+output:
+html_document: default
+---
+
+# 1. loading library and function
+
+```{r}
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(ggpubr))
+suppressPackageStartupMessages(library(survminer))
+suppressPackageStartupMessages(library(survival))
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(forestplot))
+suppressPackageStartupMessages(library(OncoScience))
+options(dplyr.summarise.inform = FALSE)
+
+```
+
+# 2. loading data
+```{r}
+data_barplot <- read.csv("/Users/xuewei/ZxProjects/CRC/2023_GSE231559/01_preprocessing/31_Myeloid_Figures/Fraction_batch_Myeloid_v1.csv", sep = "\t", h = T, check.names = F, row.names=1)
+
+```
+
+# 3. plotutil_barplot_standard
+```{r}
+data_barplot$batch=factor(data_barplot$batch, levels=c('Col_N_1', 'Col_N_2', 'Col_N_3', 'Col_T_1', 'Col_T_3', 'Col_T_4', 'Col_T_5', 'Liv_N_1', 'Liv_N_2', 'Liv_N_3', 'Liv_N_4', 'Liv_N_5', 'Liv_N_7', 'Liv_N_9', 'Liv_N_11', 'Liv_T_1', 'Liv_T_4', 'Liv_T_6', 'Liv_T_8_1', 'Liv_T_8_2', 'Liv_T_9', 'Liv_T_10', 'Liv_T_11', 'Liv_T_12'))
+data_barplot$Myeloid_cluster=factor(data_barplot$Myeloid_cluster, levels=c('Macrophage', 'Monocytes', 'Mast cells', 'Dendritic cells'))
+
+# pdf("20231107_31_Fraction_cell_type_v1.pdf", height=5, width=5)
+# plotutil_barplot_standard(
+#     df_clicor = data_barplot,
+#     cli_col_xaxis = "batch",
+#     cli_col_yaxis = "Myeloid_cluster"
+# )
+# dev.off()
+
+pdf("20231210_31_Fraction_cell_type_v2.pdf", height=5, width=12)
+data_barplot %>%
+  ggplot(mapping = aes(x = batch, fill = Myeloid_cluster))+
+  geom_bar(position = "fill", alpha=1, width=0.4)+
+  # geom_bar(position = "dodge", alpha=1, width=0.4)+
+  # coord_flip()+
+  scale_fill_manual(values=c('#bb135d', '#0073ff', '#ff6600', '#845ec2'))+
+  # geom_text(stat = "count", ggplot2::aes(label = ..count..), 
+  #     color = "#f7f7f7", position = ggplot2::position_fill(0.5))+
+  scale_y_continuous(expand = c(0,0))+
+  theme_classic()+
+  theme(legend.title=element_blank(), legend.position = "right")+
+  labs(title = "") +
+  xlab(label = "")+ylab(label = "Fraction of cell type") +
+  theme(axis.line=element_line(size=0.5, colour="black")) +
+  theme(plot.title = element_text(hjust = 0.5, face="bold", color="black", size=15)) +
+  theme(axis.ticks=element_line(size=0.5, colour="black"), axis.ticks.length=unit(0.5, "lines"))+
+  theme(axis.text.x = element_text(face="plain", color="black", size=15, hjust=1, angle=90),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold", color="black", size=15))
+dev.off()
+
+```
+
+# 4. plotutil_barplot_standard
+```{r}
+# data_barplot <- data_barplot %>% 
+#   filter(str_detect(batch_3rd, "Primary|Metastasis"))
+data_barplot$batch=factor(data_barplot$batch, levels=c('Col_N_1', 'Col_N_2', 'Col_N_3', 'Col_T_1', 'Col_T_3', 'Col_T_4', 'Col_T_5', 'Liv_N_1', 'Liv_N_2', 'Liv_N_3', 'Liv_N_4', 'Liv_N_5', 'Liv_N_7', 'Liv_N_9', 'Liv_N_11', 'Liv_T_1', 'Liv_T_4', 'Liv_T_6', 'Liv_T_8_1', 'Liv_T_8_2', 'Liv_T_9', 'Liv_T_10', 'Liv_T_11', 'Liv_T_12'))
+data_barplot$Myeloid_cluster=factor(data_barplot$Myeloid_cluster, levels=c('Macrophage', 'Monocytes', 'Mast cells', 'Dendritic cells'))
+
+# pdf("20231107_31_Fraction_cell_type_v3.pdf", height=5, width=6)
+# plotutil_barplot_standard(
+#     df_clicor = data_barplot,
+#     cli_col_xaxis = "batch",
+#     cli_col_yaxis = "Myeloid_cluster"
+# )
+# dev.off()
+
+pdf("20231210_31_Fraction_cell_type_v4.pdf", height=5, width=12)
+data_barplot %>%
+  ggplot(mapping = aes(x = batch, fill = Myeloid_cluster))+
+  # geom_bar(position = "fill", alpha=1, width=0.4)+
+  geom_bar(position = "dodge", alpha=1, width=0.8)+
+  # coord_flip()+
+  scale_fill_manual(values=c('#bb135d', '#0073ff', '#ff6600', '#845ec2'))+
+  # geom_text(stat = "count", ggplot2::aes(label = ..count..), 
+  #     color = "#f7f7f7", position = ggplot2::position_fill(0.5))+
+  scale_y_continuous(expand = c(0,0))+
+  theme_classic()+
+  theme(legend.title=element_blank(), legend.position = "right")+
+  labs(title = "") +
+  xlab(label = "")+ylab(label = "The Number of cells") +
+  theme(axis.line=element_line(size=0.5, colour="black")) +
+  theme(plot.title = element_text(hjust = 0.5, face="bold", color="black", size=15)) +
+  theme(axis.ticks=element_line(size=0.5, colour="black"), axis.ticks.length=unit(0.5, "lines"))+
+  theme(axis.text.x = element_text(face="plain", color="black", size=15, hjust=1, angle=90),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold", color="black", size=15))
+dev.off()
+
+```
+

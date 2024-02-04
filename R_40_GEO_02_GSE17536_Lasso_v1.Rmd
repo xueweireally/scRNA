@@ -1,0 +1,251 @@
+---
+title: "KM of GSE17536"
+author: "Wei"
+date: '2023-11-13'
+output:
+html_document: default
+---
+
+# 0. loading library
+```{r}
+suppressPackageStartupMessages(library(GEOquery))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(tibble))
+suppressPackageStartupMessages(library(survival))
+suppressPackageStartupMessages(library(survminer))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(tidyr))
+suppressPackageStartupMessages(library(readr))
+suppressPackageStartupMessages(library(purrr))
+suppressPackageStartupMessages(library(stringr))
+suppressPackageStartupMessages(library(forcats))
+
+suppressMessages(library(writexl))
+suppressPackageStartupMessages(library(fs))
+suppressPackageStartupMessages(library(readxl))
+
+options(dplyr.summarise.inform = FALSE)
+
+```
+
+# 1. work dir
+```{r}
+wd <- fs::path('/Users/xuewei/ZxProjects/CRC/2023_GSE231559/01_preprocessing/40_GEO_validate/median/02_GSE17536/')
+# wd_i <- fs::path(wd, 'CRC_GEO') 
+wd_i <- fs::path('/Users/xuewei/ZuDatabase/GEO/COAD/CRC_GEO/')
+check_outdir <- function(outdir) {
+  if (!fs::dir_exists(outdir)) {
+    fs::dir_create(outdir)
+  }
+}
+check_outdir(wd_i)
+
+```
+
+# 2. loading data
+# 获取样本名(sample)为第一列，后面n列为基因表达，最后两列为总生存time和status的gene_surv_input
+```{r}
+expr_data <- read_rds(fs::path(wd_i, 'GSE17536_gene_expr.rds'))
+clin_data <- read_rds(fs::path(wd_i, 'GSE17536_clin_info.rds'))
+expr_surv <- read_rds(fs::path(wd_i, 'GSE17536_expr_surv.rds'))
+
+# expr_data2 <- expr_data %>% 
+#   column_to_rownames(var="Gene Symbol")
+# expr_data3 <- scale(expr_data2) %>% 
+#   as.data.frame()
+# expr_data4 <- expr_data3 %>% 
+#   rownames_to_column(var="Gene")
+# 
+# # expr_data5 <- as.data.frame(data.table::transpose(expr_data4, keep.names = "Gene", make.names = 1))
+# 
+# write.table(expr_data4, file="expr_data.txt", sep = "\t", quote=F, row.names = F)
+
+COAD.lasso_res <- read.table("/Users/xuewei/ZxProjects/CRC/2023_GSE231559/01_preprocessing/32_Macrophage_Figures/Rds_02_Lasso_Cox_02_lasso_res.txt", sep = "\t", h = T, check.names = F)
+
+```
+
+# 3. lasso cox [genelist , expr_surv_data and surv_samples]
+```{r}
+# genelist
+COAD.genelist <- COAD.lasso_res$gene
+
+# expr_surv_data
+exprSet_matrix <- expr_surv %>% 
+    rename(time=OS.time, status=OS.status)
+
+# sample_id
+COAD.surv_samples <- expr_surv$sample
+
+# COAD.lasso_res
+COAD.lasso_res <- COAD.lasso_res
+
+```
+
+# 4. get_gene_surv
+## 4.1 function
+```{r}
+get_gene_surv <- function(genelist, expr_surv_data, surv_samples) {
+  surv_input <- expr_surv_data %>%
+    filter(sample %in% surv_samples) %>%
+    filter(!is.na(status)) %>%
+    filter(!is.na(time)) %>%
+    filter(time != 0)
+  express_genes <-
+    intersect(genelist, colnames(surv_input)[2:ncol(surv_input) - 2])
+  no_express <-
+    setdiff(genelist, colnames(surv_input)[2:ncol(surv_input) - 2])
+  print(paste0('input gene number: ', as.character(length(genelist))))
+  print(paste0('expressed gene number: ', as.character(length(express_genes))))
+  print(no_express)
+  gene_surv_input <- surv_input %>%
+    dplyr::select(sample, express_genes, time, status)
+  gene_surv_input$status <- as.numeric(gene_surv_input$status)
+  return(gene_surv_input)
+}
+
+```
+
+## 4.2 get gene for survival
+```{r}
+COAD.gene_surv <- get_gene_surv(COAD.genelist, exprSet_matrix, COAD.surv_samples)
+
+```
+
+
+# 7. risk_group_surv
+## 7.1 function
+```{r}
+risk_group_surv <- function(lasso_res, gene_surv_input, cutoff) {
+  gene_surv_input1 <- gene_surv_input %>%
+    mutate(risk_score = eval(parse(text = paste(paste0('`',lasso_res$gene,'`'), lasso_res$coef, sep = '*', collapse = '+')))) %>% 
+    mutate(risk_group = ifelse(risk_score > as.numeric(quantile(risk_score, seq(0, 1, 0.05))[(100-cutoff)/5+1]), 'high_risk', 'low_risk'))
+  return(gene_surv_input1)
+}
+
+```
+
+## 7.2 run risk_group_surv
+```{r}
+# delete MIR210HG and MIR210HG
+COAD.lasso_res2 <- COAD.lasso_res %>%
+  filter(!(gene %in% c("HIF1A-AS3", "AL645608.7")))
+
+COAD.risk_group_surv <- risk_group_surv(COAD.lasso_res2, COAD.gene_surv, 50)
+write.table(COAD.risk_group_surv, file="Rds_02_Lasso_Cox_04_risk_group_surv.txt", sep = "\t", quote=F, row.names = F)
+
+```
+
+# 8. risk_performance
+## 8.1 function
+```{r}
+risk_performance <-
+  function(lasso_res,
+           gene_surv,
+           cutoff,
+           leg_pos = c(0.75, 0.25),
+           time_col = 'time',
+           status_col = 'status',
+           marker_var = 'risk_score') {
+    risk_surv <- risk_group_surv(lasso_res, gene_surv, cutoff)
+    #KM_p1 <- plotutil_OS_nyear_KM(risk_surv, 1, leg_pos = leg_pos)
+    #KM_p3 <- plotutil_OS_nyear_KM(risk_surv, 3, leg_pos = leg_pos)
+    KM_p5 <- plotutil_OS_nyear_KM(risk_surv, 5, leg_pos = leg_pos)
+    KM_p10 <- plotutil_OS_nyear_KM(risk_surv, 10, leg_pos = leg_pos)
+    AUC_p <- plotutil_time_AUC(risk_surv, time_col, status_col, marker_var)
+    return(
+      list(
+        risk_surv = risk_surv,
+        #KM_1year = KM_p1,
+        #KM_3year = KM_p3,
+        KM_5year = KM_p5,
+        KM_10year = KM_p10,
+        AUC_plot = AUC_p
+      )
+    )
+  }
+
+```
+
+## 8.2 run for risk_performance
+```{r}
+source("/Users/xuewei/ZeroData/scripts/R_BNR/Cell_death_Rscript/Lasso_Cox_plotutil_v1.R")
+
+COAD.risk_performance <- risk_performance(
+  lasso_res = COAD.lasso_res2, 
+  gene_surv = COAD.gene_surv,
+  cutoff = 50
+  )
+
+pdf("20231113_02_Lasso_Cox_01_KM_5year.pdf", height=6, width=6)
+COAD.risk_performance$KM_5year
+dev.off()
+
+pdf("20231113_02_Lasso_Cox_02_KM_10year.pdf", height=6, width=6)
+COAD.risk_performance$KM_10year
+dev.off()
+
+pdf("20231113_02_Lasso_Cox_03_AUC_plot.pdf", height=6, width=6)
+COAD.risk_performance$AUC_plot
+dev.off()
+
+```
+
+# 9. plot by Status
+## 9.1 Status by median
+```{r}
+# add Status by >= 75% (high) and <= 25% (low)
+COAD.risk_group_surv2 <- COAD.risk_group_surv %>% 
+  mutate(Status = ifelse(risk_score >= quantile(COAD.risk_group_surv$risk_score, 0.50), "High", "Low"))
+# delete NA by row
+COAD.risk_group_surv2 <- na.omit(COAD.risk_group_surv2) %>% 
+  rename(OS = time, status = status)
+# count of group
+COAD.risk_group_surv2 %>% 
+  select(Status) %>% 
+  count(Status)
+
+saveRDS(as.data.frame(COAD.risk_group_surv2), file = "Rds_02_Lasso_Cox_04_group_surv.rds")
+
+```
+
+## 9.1 plot
+```{r}
+fit <- survfit(Surv(OS, status) ~ Status, data = COAD.risk_group_surv2)
+sdiff <- survdiff(Surv(OS, status) ~ Status, data = COAD.risk_group_surv2)
+HR = (sdiff$obs[1]/sdiff$exp[1])/(sdiff$obs[2]/sdiff$exp[2])
+up95 = exp(log(HR) + qnorm(0.975)*sqrt(1/sdiff$exp[2]+1/sdiff$exp[1]))
+low95 = exp(log(HR) - qnorm(0.975)*sqrt(1/sdiff$exp[2]+1/sdiff$exp[1]))
+
+pdf("20231113_40_GEO_GSE17536_v3_all.pdf",height=6,width=6)
+p1 <- ggsurvplot(fit,
+           data = COAD.risk_group_surv2,
+           pval = TRUE, pval.size = 5,
+           surv.scale = c("percent"),
+           conf.int = FALSE,
+           risk.table = TRUE, # Add risk table
+           tables.y.text = FALSE,
+           tables.height = 0.15,
+           risk.table.col = 'black',
+           #risk.table.col = "strata", # Change risk table color by groups
+           #surv.median.line = "hv", # Specify median survival
+           palette = c("#ED0100", "#00468B"),
+           tables.theme = theme_cleantable(),
+           legend = c(0.75, 0.25),
+           legend.title = 'Status',
+           legend.labs = c('High', 'Low'),
+           #break.x.by = 2000,
+           xlab = 'Time in days',
+           ylab = 'Overall Survival (%)',
+           font.x = c(14, "bold", "black"),
+           font.y = c(14, "bold", "black"),
+           font.legend = c(12, "bold", "black"),
+           pval.coord = c(0.1, 0.1),
+           #ggtheme = theme_bw() #ggtheme = , # Change ggplot2 theme
+           )
+p1$plot = p1$plot + ggplot2::annotate("text", x = -Inf, y = -Inf, hjust = -0.15, vjust = -2, label = paste("HR:",round((sdiff$obs[1]/sdiff$exp[1])/(sdiff$obs[2]/sdiff$exp[2]),2),"[",round(exp(log(HR) - qnorm(0.95)*sqrt(1/sdiff$exp[2]+1/sdiff$exp[1])),2),"-",round(exp(log(HR) + qnorm(0.95)*sqrt(1/sdiff$exp[2]+1/sdiff$exp[1])),2),"]"),size = 5)
+p1
+dev.off()
+
+```
+

@@ -1,0 +1,70 @@
+---
+title: "diff clusters in Macrophage cell"
+author: "Wei"
+date: '2023-11-10'
+output:
+html_document: default
+---
+
+# 1. loading library and function
+```{r}
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(ggrepel))
+suppressPackageStartupMessages(library(ggpubr))
+suppressPackageStartupMessages(library(ggpmisc))
+options(dplyr.summarise.inform = FALSE)
+
+```
+
+# 2. loading data
+```{r}
+diff_csv <- read.csv("/Users/xuewei/ZxProjects/CRC/2023_GSE231559/01_preprocessing/32_Macrophage_Figures/32_diff_1_res_Mph-EEF1G_df.csv", h = T, check.names = F, row.names=1)
+LUAD_OS <- read.csv("/Users/xuewei/ZxProjects/CRC/TCGA/03_TCGA_OS/COAD_TCGA_cox_gene_1_median.txt", sep="\t")
+
+```
+
+# 3. data processing
+## 3.1 replace NA and slecet significant genes
+```{r}
+diff_csv2 <- diff_csv %>% 
+  filter(!is.na(logfoldchanges))
+diff_csv3 <- diff_csv2 %>% 
+  dplyr::mutate(Type = case_when(logfoldchanges >= 1 & pvals_adj < 0.05 ~ "Up",
+                                 logfoldchanges <= -1 & pvals_adj < 0.05 ~ "Down",
+                                 TRUE ~ "Other")) %>% 
+  filter(str_detect(Type, "Up|Down"))
+write.table(diff_csv3, file="diff_Mph-EEF1G_cells_df_log2FC2_v1.txt", sep = "\t", quote=F, row.names = F)
+
+```
+
+## 3.2 selcet significant OS genes
+```{r}
+# p.value < 0.05
+LUAD_OS2 <- LUAD_OS %>% 
+  filter(HR > 1.0 & p.value < 0.05)
+
+# p.value < 0.01
+LUAD_OS3 <- LUAD_OS %>% 
+  filter(HR > 1.0 & p.value < 0.01)
+
+```
+
+## 3.3 join DEGs and OS genes
+```{r}
+# p.value < 0.05
+join_DEGs_OS2 <- left_join(diff_csv3, LUAD_OS2, by = c("names" = "gene")) %>% 
+  filter(!is.na(HR)) %>% 
+  arrange(desc(logfoldchanges), p.value) %>% 
+  filter(str_detect(Type, "Up"))
+write.table(join_DEGs_OS2, file="Rds_01_join_DEGs_OS_p0.05.txt", sep = "\t", quote=F, row.names = F)
+
+# p.value < 0.01
+join_DEGs_OS3 <- left_join(diff_csv3, LUAD_OS3, by = c("names" = "gene")) %>% 
+  filter(!is.na(HR)) %>% 
+  arrange(desc(logfoldchanges), p.value) %>% 
+  filter(str_detect(Type, "Up"))
+write.table(join_DEGs_OS3, file="Rds_01_join_DEGs_OS_p0.01.txt", sep = "\t", quote=F, row.names = F)
+
+```
+

@@ -1,0 +1,857 @@
+---
+title: "pRRophetic or oncoPredict"
+author: "Wei"
+date: '2023-11-14'
+output:
+html_document: default
+---
+
+# 1. loading library and function
+```{r}
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(cowplot))
+suppressPackageStartupMessages(library(RColorBrewer))
+suppressPackageStartupMessages(library(ggbeeswarm))
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(pRRophetic))
+suppressPackageStartupMessages(library(pacman))
+pacman::p_load(tidyverse,ggpubr,rstatix,ggsci,ggsignif,reshape2)
+options(dplyr.summarise.inform = FALSE)
+
+```
+
+# 2. source function and loading data 
+```{r}
+# input expr_data
+expr_data <- read_rds('/Users/xuewei/ZxProjects/CRC/TCGA/01_Data/TCGA-COAD.tpm_clinical.rds')
+expr_data <- expr_data %>% 
+  rownames_to_column(var = "Gene_symbol")
+expr_data <- as.data.frame(data.table::transpose(expr_data, keep.names = "Gene_symbol", make.names = 1))
+expr_data <- expr_data %>% 
+  column_to_rownames(var = "Gene_symbol")
+
+# Group
+group_type <- read.table("/Users/xuewei/ZxProjects/CRC/2023_GSE231559/01_preprocessing/32_Macrophage_Figures/Rds_02_Lasso_Cox_04_risk_group_surv.txt", sep = "\t", h = T, check.names = F)
+
+```
+
+# 3. Data process
+```{r}
+data(PANCANCER_IC_Tue_Aug_9_15_28_57_2016)
+data(cgp2016ExprRma)
+
+# COAD_drug %>% 
+#   select(TCGA.classification) %>% 
+#   unique()
+COAD_drug <- drugData2016 %>% 
+  select(Drug.name, TCGA.classification, Tissue, Tissue.sub.type) %>% 
+  filter(TCGA.classification=="COREAD") %>% 
+  distinct()
+
+```
+
+# 4. Dabrafenib
+# 4.1 pRRopheticPredict
+```{r}
+expr_data <- as.matrix(expr_data)
+predictedPtype <- pRRopheticPredict(testMatrix=expr_data,
+                                    drug="Dabrafenib",
+                                    tissueType = "all",
+                                    batchCorrect = "eb",
+                                    selection = 1,
+                                    dataset = "cgp2016")
+predictedPtype <- as.data.frame(predictedPtype) %>% 
+  rownames_to_column("Sample")
+
+```
+
+## 4.2 join group Dabrafenib
+```{r}
+predictedPtype2 <- predictedPtype %>% 
+  right_join(group_type, by = c("Sample" = "sample_id")) %>% 
+  mutate(Group = ifelse(risk_group == "low_risk", "Low", "High"))
+
+summary(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype)
+summary(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)
+wilcox.test(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype, predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)
+
+```
+
+## 4.3 boxplot Dabrafenib
+```{r}
+predictedPtype2$Group <- factor(predictedPtype2$Group, levels=c("Low", "High"))
+
+pdf("20231114_Dabrafenib_boxplot_v1.pdf", height=5, width=5)
+
+ggplot(data = predictedPtype2,
+       aes(y = predictedPtype,
+           x = Group))+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.40, y=median(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype), label=sprintf("%0.2f", median(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype)), color = "#000000", size = 6)+
+  annotate("text", x=2.41, y=median(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype), label=sprintf("%0.2f", median(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)), color = "#000000", size = 6)+
+  geom_boxplot(alpha = 0.8, width=0.5,
+               fill = c('#3b9a9c','#ffb549'))+
+  theme_bw()+
+  ylab('Predicted sensitivity of Dabrafenib')+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+
+dev.off()
+
+```
+
+# 5. Camptothecin
+## 5.1 pRRopheticPredict
+```{r}
+expr_data <- as.matrix(expr_data)
+predictedPtype <- pRRopheticPredict(testMatrix=expr_data,
+                                    drug="Camptothecin",
+                                    tissueType = "all",
+                                    batchCorrect = "eb",
+                                    selection = 1,
+                                    dataset = "cgp2016")
+predictedPtype <- as.data.frame(predictedPtype) %>% 
+  rownames_to_column("Sample")
+
+```
+
+## 5.2 join group Camptothecin
+```{r}
+predictedPtype2 <- predictedPtype %>% 
+  right_join(group_type, by = c("Sample" = "sample_id")) %>% 
+  mutate(Group = ifelse(risk_group == "low_risk", "Low", "High"))
+
+summary(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype)
+summary(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)
+wilcox.test(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype, predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)
+
+```
+
+## 5.3 boxplot Camptothecin
+```{r}
+predictedPtype2$Group <- factor(predictedPtype2$Group, levels=c("Low", "High"))
+
+pdf("20231114_Camptothecin_boxplot_v1.pdf", height=5, width=5)
+
+ggplot(data = predictedPtype2,
+       aes(y = predictedPtype,
+           x = Group))+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.40, y=median(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype), label=sprintf("%0.2f", median(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype)), color = "#000000", size = 6)+
+  annotate("text", x=2.41, y=median(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype), label=sprintf("%0.2f", median(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)), color = "#000000", size = 6)+
+  geom_boxplot(alpha = 0.8, width=0.5,
+               fill = c('#3b9a9c','#ffb549'))+
+  theme_bw()+
+  ylab('Predicted sensitivity of Camptothecin')+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+
+dev.off()
+
+```
+
+# 6. Docetaxel
+## 6.1 pRRopheticPredict
+```{r}
+expr_data <- as.matrix(expr_data)
+predictedPtype <- pRRopheticPredict(testMatrix=expr_data,
+                                    drug="Docetaxel",
+                                    tissueType = "all",
+                                    batchCorrect = "eb",
+                                    selection = 1,
+                                    dataset = "cgp2016")
+predictedPtype <- as.data.frame(predictedPtype) %>% 
+  rownames_to_column("Sample")
+
+```
+
+## 6.2 join group Docetaxel
+```{r}
+predictedPtype2 <- predictedPtype %>% 
+  right_join(group_type, by = c("Sample" = "sample_id")) %>% 
+  mutate(Group = ifelse(risk_group == "low_risk", "Low", "High"))
+
+summary(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype)
+summary(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)
+wilcox.test(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype, predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)
+
+```
+
+## 6.3 boxplot Docetaxel
+```{r}
+predictedPtype2$Group <- factor(predictedPtype2$Group, levels=c("Low", "High"))
+
+pdf("20231114_Docetaxel_boxplot_v1.pdf", height=5, width=5)
+
+ggplot(data = predictedPtype2,
+       aes(y = predictedPtype,
+           x = Group))+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.40, y=median(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype), label=sprintf("%0.2f", median(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype)), color = "#000000", size = 6)+
+  annotate("text", x=2.41, y=median(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype), label=sprintf("%0.2f", median(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)), color = "#000000", size = 6)+
+  geom_boxplot(alpha = 0.8, width=0.5,
+               fill = c('#3b9a9c','#ffb549'))+
+  theme_bw()+
+  ylab('Predicted sensitivity of Docetaxel')+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+
+dev.off()
+
+```
+
+# 7. Gefitinib
+## 7.1 pRRopheticPredict
+```{r}
+expr_data <- as.matrix(expr_data)
+predictedPtype <- pRRopheticPredict(testMatrix=expr_data,
+                                    drug="Gefitinib",
+                                    tissueType = "all",
+                                    batchCorrect = "eb",
+                                    selection = 1,
+                                    dataset = "cgp2016")
+predictedPtype <- as.data.frame(predictedPtype) %>% 
+  rownames_to_column("Sample")
+
+```
+
+## 7.2 join group Gefitinib
+```{r}
+predictedPtype2 <- predictedPtype %>% 
+  right_join(group_type, by = c("Sample" = "sample_id")) %>% 
+  mutate(Group = ifelse(risk_group == "low_risk", "Low", "High"))
+
+summary(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype)
+summary(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)
+wilcox.test(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype, predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)
+
+```
+
+## 7.3 boxplot Gefitinib
+```{r}
+predictedPtype2$Group <- factor(predictedPtype2$Group, levels=c("Low", "High"))
+
+pdf("20231114_Gefitinib_boxplot_v1.pdf", height=5, width=5)
+
+ggplot(data = predictedPtype2,
+       aes(y = predictedPtype,
+           x = Group))+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.40, y=median(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype), label=sprintf("%0.2f", median(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype)), color = "#000000", size = 6)+
+  annotate("text", x=2.41, y=median(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype), label=sprintf("%0.2f", median(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)), color = "#000000", size = 6)+
+  geom_boxplot(alpha = 0.8, width=0.5,
+               fill = c('#3b9a9c','#ffb549'))+
+  theme_bw()+
+  ylab('Predicted sensitivity of Gefitinib')+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+
+dev.off()
+
+```
+
+# 8. Gemcitabine
+## 8.1 pRRopheticPredict
+```{r}
+expr_data <- as.matrix(expr_data)
+predictedPtype <- pRRopheticPredict(testMatrix=expr_data,
+                                    drug="Gemcitabine",
+                                    tissueType = "all",
+                                    batchCorrect = "eb",
+                                    selection = 1,
+                                    dataset = "cgp2016")
+predictedPtype <- as.data.frame(predictedPtype) %>% 
+  rownames_to_column("Sample")
+
+```
+
+## 8.2 join group Gemcitabine
+```{r}
+predictedPtype2 <- predictedPtype %>% 
+  right_join(group_type, by = c("Sample" = "sample_id")) %>% 
+  mutate(Group = ifelse(risk_group == "low_risk", "Low", "High"))
+
+summary(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype)
+summary(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)
+wilcox.test(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype, predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)
+
+```
+
+## 8.3 boxplot Gemcitabine
+```{r}
+predictedPtype2$Group <- factor(predictedPtype2$Group, levels=c("Low", "High"))
+
+pdf("20231114_Gemcitabine_boxplot_v1.pdf", height=5, width=5)
+
+ggplot(data = predictedPtype2,
+       aes(y = predictedPtype,
+           x = Group))+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.40, y=median(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype), label=sprintf("%0.2f", median(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype)), color = "#000000", size = 6)+
+  annotate("text", x=2.41, y=median(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype), label=sprintf("%0.2f", median(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)), color = "#000000", size = 6)+
+  geom_boxplot(alpha = 0.8, width=0.5,
+               fill = c('#3b9a9c','#ffb549'))+
+  theme_bw()+
+  ylab('Predicted sensitivity of Gemcitabine')+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+
+dev.off()
+
+```
+
+# 9. Pazopanib
+## 9.1 pRRopheticPredict
+```{r}
+expr_data <- as.matrix(expr_data)
+predictedPtype <- pRRopheticPredict(testMatrix=expr_data,
+                                    drug="Pazopanib",
+                                    tissueType = "all",
+                                    batchCorrect = "eb",
+                                    selection = 1,
+                                    dataset = "cgp2016")
+predictedPtype <- as.data.frame(predictedPtype) %>% 
+  rownames_to_column("Sample")
+
+```
+
+## 9.2 join group Pazopanib
+```{r}
+predictedPtype2 <- predictedPtype %>% 
+  right_join(group_type, by = c("Sample" = "sample_id")) %>% 
+  mutate(Group = ifelse(risk_group == "low_risk", "Low", "High"))
+
+summary(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype)
+summary(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)
+wilcox.test(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype, predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)
+
+```
+
+## 9.3 boxplot Pazopanib
+```{r}
+predictedPtype2$Group <- factor(predictedPtype2$Group, levels=c("Low", "High"))
+
+pdf("20231114_Pazopanib_boxplot_v1.pdf", height=5, width=5)
+
+ggplot(data = predictedPtype2,
+       aes(y = predictedPtype,
+           x = Group))+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.40, y=median(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype), label=sprintf("%0.2f", median(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype)), color = "#000000", size = 6)+
+  annotate("text", x=2.41, y=median(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype), label=sprintf("%0.2f", median(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)), color = "#000000", size = 6)+
+  geom_boxplot(alpha = 0.8, width=0.5,
+               fill = c('#3b9a9c','#ffb549'))+
+  theme_bw()+
+  ylab('Predicted sensitivity of Pazopanib')+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+
+dev.off()
+
+```
+
+# 10. Sunitinib
+## 10.1 pRRopheticPredict
+```{r}
+expr_data <- as.matrix(expr_data)
+predictedPtype <- pRRopheticPredict(testMatrix=expr_data,
+                                    drug="Sunitinib",
+                                    tissueType = "all",
+                                    batchCorrect = "eb",
+                                    selection = 1,
+                                    dataset = "cgp2016")
+predictedPtype <- as.data.frame(predictedPtype) %>% 
+  rownames_to_column("Sample")
+
+```
+
+## 10.2 join group Sunitinib
+```{r}
+predictedPtype2 <- predictedPtype %>% 
+  right_join(group_type, by = c("Sample" = "sample_id")) %>% 
+  mutate(Group = ifelse(risk_group == "low_risk", "Low", "High"))
+
+summary(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype)
+summary(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)
+wilcox.test(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype, predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)
+
+```
+
+## 10.3 boxplot Sunitinib
+```{r}
+predictedPtype2$Group <- factor(predictedPtype2$Group, levels=c("Low", "High"))
+
+pdf("20231114_Sunitinib_boxplot_v1.pdf", height=5, width=5)
+
+ggplot(data = predictedPtype2,
+       aes(y = predictedPtype,
+           x = Group))+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.40, y=median(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype), label=sprintf("%0.2f", median(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype)), color = "#000000", size = 6)+
+  annotate("text", x=2.41, y=median(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype), label=sprintf("%0.2f", median(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)), color = "#000000", size = 6)+
+  geom_boxplot(alpha = 0.8, width=0.5,
+               fill = c('#3b9a9c','#ffb549'))+
+  theme_bw()+
+  ylab('Predicted sensitivity of Sunitinib')+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+
+dev.off()
+
+```
+
+# 11. 5-Fluorouracil
+## 11.1 pRRopheticPredict
+```{r}
+expr_data <- as.matrix(expr_data)
+predictedPtype <- pRRopheticPredict(testMatrix=expr_data,
+                                    drug="5-Fluorouracil",
+                                    tissueType = "all",
+                                    batchCorrect = "eb",
+                                    selection = 1,
+                                    dataset = "cgp2016")
+predictedPtype <- as.data.frame(predictedPtype) %>% 
+  rownames_to_column("Sample")
+
+```
+
+## 11.2 join group 5-Fluorouracil
+```{r}
+predictedPtype2 <- predictedPtype %>% 
+  right_join(group_type, by = c("Sample" = "sample_id")) %>% 
+  mutate(Group = ifelse(risk_group == "low_risk", "Low", "High"))
+
+summary(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype)
+summary(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)
+wilcox.test(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype, predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)
+
+```
+
+## 11.3 boxplot 5-Fluorouracil
+```{r}
+predictedPtype2$Group <- factor(predictedPtype2$Group, levels=c("Low", "High"))
+
+pdf("20231114_5-Fluorouracil_boxplot_v1.pdf", height=5, width=5)
+
+ggplot(data = predictedPtype2,
+       aes(y = predictedPtype,
+           x = Group))+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.40, y=median(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype), label=sprintf("%0.2f", median(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype)), color = "#000000", size = 6)+
+  annotate("text", x=2.41, y=median(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype), label=sprintf("%0.2f", median(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)), color = "#000000", size = 6)+
+  geom_boxplot(alpha = 0.8, width=0.5,
+               fill = c('#3b9a9c','#ffb549'))+
+  theme_bw()+
+  ylab('Predicted sensitivity of 5-Fluorouracil')+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+
+dev.off()
+
+```
+
+
+# 12. Erlotinib
+```{r}
+## 1. pRRopheticPredict
+expr_data <- as.matrix(expr_data)
+predictedPtype <- pRRopheticPredict(testMatrix=expr_data,
+                                    drug="Erlotinib",
+                                    tissueType = "all",
+                                    batchCorrect = "eb",
+                                    selection = 1,
+                                    dataset = "cgp2016")
+predictedPtype <- as.data.frame(predictedPtype) %>% 
+  rownames_to_column("Sample")
+
+# 2. join group Erlotinib
+predictedPtype2 <- predictedPtype %>% 
+  right_join(group_type, by = c("Sample" = "sample_id")) %>% 
+  mutate(Group = ifelse(risk_group == "low_risk", "Low", "High"))
+
+summary(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype)
+summary(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)
+wilcox.test(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype, predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)
+
+# 3. boxplot Erlotinib
+predictedPtype2$Group <- factor(predictedPtype2$Group, levels=c("Low", "High"))
+
+pdf("20231114_Erlotinib_boxplot_v1.pdf", height=5, width=5)
+
+ggplot(data = predictedPtype2,
+       aes(y = predictedPtype,
+           x = Group))+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.40, y=median(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype), label=sprintf("%0.2f", median(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype)), color = "#000000", size = 6)+
+  annotate("text", x=2.41, y=median(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype), label=sprintf("%0.2f", median(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)), color = "#000000", size = 6)+
+  geom_boxplot(alpha = 0.8, width=0.5,
+               fill = c('#3b9a9c','#ffb549'))+
+  theme_bw()+
+  ylab('Predicted sensitivity of Erlotinib')+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+
+dev.off()
+
+```
+
+# 13. Cetuximab
+```{r}
+## 1. pRRopheticPredict
+expr_data <- as.matrix(expr_data)
+predictedPtype <- pRRopheticPredict(testMatrix=expr_data,
+                                    drug="Cetuximab",
+                                    tissueType = "all",
+                                    batchCorrect = "eb",
+                                    selection = 1,
+                                    dataset = "cgp2016")
+predictedPtype <- as.data.frame(predictedPtype) %>% 
+  rownames_to_column("Sample")
+
+# 2. join group Cetuximab
+predictedPtype2 <- predictedPtype %>% 
+  right_join(group_type, by = c("Sample" = "sample_id")) %>% 
+  mutate(Group = ifelse(risk_group == "low_risk", "Low", "High"))
+
+summary(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype)
+summary(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)
+wilcox.test(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype, predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)
+
+# 3. boxplot Cetuximab
+predictedPtype2$Group <- factor(predictedPtype2$Group, levels=c("Low", "High"))
+
+pdf("20231114_Cetuximab_boxplot_v1.pdf", height=5, width=5)
+
+ggplot(data = predictedPtype2,
+       aes(y = predictedPtype,
+           x = Group))+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.40, y=median(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype), label=sprintf("%0.2f", median(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype)), color = "#000000", size = 6)+
+  annotate("text", x=2.41, y=median(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype), label=sprintf("%0.2f", median(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)), color = "#000000", size = 6)+
+  geom_boxplot(alpha = 0.8, width=0.5,
+               fill = c('#3b9a9c','#ffb549'))+
+  theme_bw()+
+  ylab('Predicted sensitivity of Cetuximab')+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+
+dev.off()
+
+```
+
+# 14. Sorafenib
+```{r}
+## 1. pRRopheticPredict
+expr_data <- as.matrix(expr_data)
+predictedPtype <- pRRopheticPredict(testMatrix=expr_data,
+                                    drug="Sorafenib",
+                                    tissueType = "all",
+                                    batchCorrect = "eb",
+                                    selection = 1,
+                                    dataset = "cgp2016")
+predictedPtype <- as.data.frame(predictedPtype) %>% 
+  rownames_to_column("Sample")
+
+# 2. join group Sorafenib
+predictedPtype2 <- predictedPtype %>% 
+  right_join(group_type, by = c("Sample" = "sample_id")) %>% 
+  mutate(Group = ifelse(risk_group == "low_risk", "Low", "High"))
+
+summary(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype)
+summary(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)
+wilcox.test(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype, predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)
+
+# 3. boxplot Sorafenib
+predictedPtype2$Group <- factor(predictedPtype2$Group, levels=c("Low", "High"))
+
+pdf("20231114_Sorafenib_boxplot_v1.pdf", height=5, width=5)
+
+ggplot(data = predictedPtype2,
+       aes(y = predictedPtype,
+           x = Group))+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.40, y=median(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype), label=sprintf("%0.2f", median(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype)), color = "#000000", size = 6)+
+  annotate("text", x=2.41, y=median(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype), label=sprintf("%0.2f", median(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)), color = "#000000", size = 6)+
+  geom_boxplot(alpha = 0.8, width=0.5,
+               fill = c('#3b9a9c','#ffb549'))+
+  theme_bw()+
+  ylab('Predicted sensitivity of Sorafenib')+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+
+dev.off()
+
+```
+
+# 15. Crizotinib
+```{r}
+## 1. pRRopheticPredict
+expr_data <- as.matrix(expr_data)
+predictedPtype <- pRRopheticPredict(testMatrix=expr_data,
+                                    drug="Crizotinib",
+                                    tissueType = "all",
+                                    batchCorrect = "eb",
+                                    selection = 1,
+                                    dataset = "cgp2016")
+predictedPtype <- as.data.frame(predictedPtype) %>% 
+  rownames_to_column("Sample")
+
+# 2. join group Crizotinib
+predictedPtype2 <- predictedPtype %>% 
+  right_join(group_type, by = c("Sample" = "sample_id")) %>% 
+  mutate(Group = ifelse(risk_group == "low_risk", "Low", "High"))
+
+summary(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype)
+summary(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)
+wilcox.test(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype, predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)
+
+# 3. boxplot Crizotinib
+predictedPtype2$Group <- factor(predictedPtype2$Group, levels=c("Low", "High"))
+
+pdf("20231114_Crizotinib_boxplot_v1.pdf", height=5, width=5)
+
+ggplot(data = predictedPtype2,
+       aes(y = predictedPtype,
+           x = Group))+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.40, y=median(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype), label=sprintf("%0.2f", median(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype)), color = "#000000", size = 6)+
+  annotate("text", x=2.41, y=median(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype), label=sprintf("%0.2f", median(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)), color = "#000000", size = 6)+
+  geom_boxplot(alpha = 0.8, width=0.5,
+               fill = c('#3b9a9c','#ffb549'))+
+  theme_bw()+
+  ylab('Predicted sensitivity of Crizotinib')+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+
+dev.off()
+
+```
+
+# 16. Imatinib
+```{r}
+## 1. pRRopheticPredict
+expr_data <- as.matrix(expr_data)
+predictedPtype <- pRRopheticPredict(testMatrix=expr_data,
+                                    drug="Imatinib",
+                                    tissueType = "all",
+                                    batchCorrect = "eb",
+                                    selection = 1,
+                                    dataset = "cgp2016")
+predictedPtype <- as.data.frame(predictedPtype) %>% 
+  rownames_to_column("Sample")
+
+# 2. join group Imatinib
+predictedPtype2 <- predictedPtype %>% 
+  right_join(group_type, by = c("Sample" = "sample_id")) %>% 
+  mutate(Group = ifelse(risk_group == "low_risk", "Low", "High"))
+
+summary(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype)
+summary(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)
+wilcox.test(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype, predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)
+
+# 3. boxplot Imatinib
+predictedPtype2$Group <- factor(predictedPtype2$Group, levels=c("Low", "High"))
+
+pdf("20231114_Imatinib_boxplot_v1.pdf", height=5, width=5)
+
+ggplot(data = predictedPtype2,
+       aes(y = predictedPtype,
+           x = Group))+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.40, y=median(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype), label=sprintf("%0.2f", median(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype)), color = "#000000", size = 6)+
+  annotate("text", x=2.41, y=median(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype), label=sprintf("%0.2f", median(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)), color = "#000000", size = 6)+
+  geom_boxplot(alpha = 0.8, width=0.5,
+               fill = c('#3b9a9c','#ffb549'))+
+  theme_bw()+
+  ylab('Predicted sensitivity of Imatinib')+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+
+dev.off()
+
+```
+
+# 17. Tipifarnib
+```{r}
+## 1. pRRopheticPredict
+expr_data <- as.matrix(expr_data)
+predictedPtype <- pRRopheticPredict(testMatrix=expr_data,
+                                    drug="Tipifarnib",
+                                    tissueType = "all",
+                                    batchCorrect = "eb",
+                                    selection = 1,
+                                    dataset = "cgp2016")
+predictedPtype <- as.data.frame(predictedPtype) %>% 
+  rownames_to_column("Sample")
+
+# 2. join group Tipifarnib
+predictedPtype2 <- predictedPtype %>% 
+  right_join(group_type, by = c("Sample" = "sample_id")) %>% 
+  mutate(Group = ifelse(risk_group == "low_risk", "Low", "High"))
+
+summary(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype)
+summary(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)
+wilcox.test(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype, predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)
+
+# 3. boxplot Tipifarnib
+predictedPtype2$Group <- factor(predictedPtype2$Group, levels=c("Low", "High"))
+
+pdf("20231114_Tipifarnib_boxplot_v1.pdf", height=5, width=5)
+
+ggplot(data = predictedPtype2,
+       aes(y = predictedPtype,
+           x = Group))+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.40, y=median(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype), label=sprintf("%0.2f", median(predictedPtype2[predictedPtype2$Group=="Low",]$predictedPtype)), color = "#000000", size = 6)+
+  annotate("text", x=2.41, y=median(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype), label=sprintf("%0.2f", median(predictedPtype2[predictedPtype2$Group=="High",]$predictedPtype)), color = "#000000", size = 6)+
+  geom_boxplot(alpha = 0.8, width=0.5,
+               fill = c('#3b9a9c','#ffb549'))+
+  theme_bw()+
+  ylab('Predicted sensitivity of Tipifarnib')+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+
+dev.off()
+
+```
+

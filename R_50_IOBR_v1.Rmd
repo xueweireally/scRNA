@@ -1,0 +1,499 @@
+---
+title: "KM of IOBR"
+author: "Wei"
+date: '2023-11-15'
+output:
+html_document: default
+---
+
+# 1. loading library
+```{r}
+suppressPackageStartupMessages(library(IOBR))
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(tidyHeatmap))
+suppressPackageStartupMessages(library(maftools))
+suppressPackageStartupMessages(library(ggpubr))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(survival))
+suppressMessages(library(writexl))
+suppressPackageStartupMessages(library(readxl))
+options(dplyr.summarise.inform = FALSE)
+
+```
+
+```{r}
+# if (!requireNamespace("BiocManager", quietly = TRUE))
+#   install.packages("BiocManager")
+# BiocManager::install(version = "3.12")
+# 
+# BiocManager::install("Cairo", force = TRUE)
+# BiocManager::install("ComplexHeatmap", force = TRUE)
+# BiocManager::install("tidyHeatmap", force = TRUE)
+
+# # options("repos"= c(CRAN="https://mirrors.tuna.tsinghua.edu.cn/CRAN/"))
+# # options(BioC_mirror="http://mirrors.tuna.tsinghua.edu.cn/bioconductor/")
+# if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+# 
+# depens<-c('tibble', 'survival', 'survminer', 'limma', "DESeq2","devtools", 'limSolve', 'GSVA', 'e1071', 'preprocessCore', 
+#           "devtools", "tidyHeatmap", "caret", "glmnet", "ppcor",  "timeROC", "pracma", "factoextra", 
+#           "FactoMineR", "WGCNA", "patchwork", 'ggplot2', "biomaRt", 'ggpubr', 'ComplexHeatmap')
+# for(i in 1:length(depens)){
+#   depen<-depens[i]
+#   if (!requireNamespace(depen, quietly = TRUE))  BiocManager::install(depen,update = FALSE, force = TRUE)
+# }
+# 
+# if (!requireNamespace("IOBR", quietly = TRUE))
+#   devtools::install_github("IOBR/IOBR")
+
+```
+
+# 2. loading data
+```{r}
+COAD.tpm <- read_rds("/Users/xuewei/ZxProjects/CRC/TCGA/01_Data/TCGA-COAD.tpm_clinical.rds") 
+COAD.risk_group <- read.csv("/Users/xuewei/ZxProjects/CRC/2023_GSE231559/01_preprocessing/32_Macrophage_Figures/Rds_02_Lasso_Cox_04_risk_group_surv.txt", sep = "\t", h = T, check.names = F)
+
+```
+
+# 3. lasso cox
+## 3.1 prepare input data
+```{r}
+OS_Sig1 <- COAD.risk_group %>% 
+  select(sample_id, time, status, risk_score, risk_group) %>% 
+  mutate(Status = ifelse(risk_score >= quantile(COAD.risk_group$risk_score, 0.5), "High", "Low")) %>% 
+  rename(OS.status = status, OS = time) %>% 
+  distinct()
+OS_Sig1 <- na.omit(OS_Sig1)
+
+COAD.group <- OS_Sig1 %>% 
+  dplyr::select(sample_id, Status) %>% 
+  rename(ID = sample_id,
+         group = Status
+         )
+pset <- COAD.group
+
+```
+
+## 3.2 COAD.tpm
+```{r}
+COAD.tpm2 <- COAD.tpm %>% 
+  rownames_to_column(var="sample")
+COAD.tpm3 <- COAD.tpm2 %>% 
+  right_join(COAD.group, by = c("sample" = "ID")) %>% 
+  dplyr::select(-group)
+
+eset_stad <- as.data.frame(data.table::transpose(COAD.tpm3, keep.names = "Gene_symbol", make.names = 1)) %>%
+  column_to_rownames(var="Gene_symbol")
+
+```
+
+# 4. Signature And TME Deconvolution Module
+## 4.1 Estimate TME associated signatures-(through ssGSEA method)
+```{r}
+sig_res<-calculate_sig_score(pdata           = NULL,
+                             eset            = eset_stad,
+                             signature       = signature_collection,
+                             method          = "ssgsea",
+                             mini_gene_count = 2)
+# join res and group
+sig_res_join <- sig_res %>% 
+  right_join(pset, by = c("ID" = "ID"))
+
+```
+
+## 4.2 Available Methods to Decode TME Contexture
+```{r}
+# 解卷积计算tme组分 ----
+cibersort <- deconvo_tme(eset = eset_stad, 
+                         method = "cibersort", 
+                         arrays = FALSE, 
+                         perm = 200)
+
+epic <- deconvo_tme(eset = eset_stad,
+                    method = "epic",
+                    arrays = FALSE)
+
+mcp <- deconvo_tme(eset = eset_stad,
+                   method = "mcpcounter")
+
+xcell <- deconvo_tme(eset = eset_stad,
+                     method = "xcell",
+                     arrays = FALSE)
+
+estimate <- deconvo_tme(eset = eset_stad,
+                        method = "estimate")
+
+timer <- deconvo_tme(eset = eset_stad,
+                     method = "timer",
+                     group_list = rep('COAD', dim(eset_stad)[2]))
+
+quantiseq <- deconvo_tme(eset = eset_stad,
+                         tumor = TRUE,
+                         arrays = FALSE,
+                         scale_mrna = TRUE,
+                         method = "quantiseq")
+
+ips <- deconvo_tme(eset = eset_stad,
+                   method = "ips",
+                   plot= FALSE)
+
+tme_combine <- cibersort %>% 
+  inner_join(.,mcp,by       = "ID") %>% 
+  inner_join(.,xcell,by     = "ID") %>%
+  inner_join(.,epic,by      = "ID") %>% 
+  inner_join(.,estimate,by  = "ID") %>% 
+  inner_join(.,timer,by     = "ID") %>% 
+  inner_join(.,quantiseq,by = "ID") %>% 
+  inner_join(.,ips,by       = "ID")
+
+write_xlsx(
+  list(ssgsea = sig_res,
+       tme_cell = tme_combine
+       ), 'immune_IOBR_main.xlsx')
+
+```
+
+
+# 5. Identify phenotype relevant signatures
+## 5.1 Construct phenotype group
+```{r}
+# 哪些signature与表型相关 -----
+sig_res <- read_xlsx('immune_IOBR_main.xlsx', sheet = 1)
+
+pset$group <- factor(pset$group, levels = c('Low', 'High'))
+
+res <- iobr_cor_plot(pdata_group           = pset,
+                   id1                   = "ID",
+                   feature_data          = sig_res,
+                   id2                   = "ID",
+                   target                = NULL,
+                   group                 = "group",
+                   is_target_continuous  = FALSE,
+                   padj_cutoff           = 1,
+                   index                 = 1,
+                   category              = "signature",
+                   # signature_group       = sig_group,
+                   signature_group       = sig_group[c(1,2,3)],
+                   ProjectID             = 'NK',
+                   # palette_box           = "paired1",
+                   palette_box           = 'paired1',
+                   palette_corplot       = "pheatmap",
+                   palette_heatmap       = 2,
+                   feature_limit         = 26,
+                   character_limit       = 30,
+                   show_heatmap_col_name = FALSE,
+                   show_col              = FALSE,
+                   show_plot             = TRUE,
+                   path = paste0("1-relevant-signatures"))
+
+```
+
+## 5.2 select relevant signatures
+```{r}
+# 最相关signature中是哪个基因与表型相关 -----
+# pos_sig <- c('CellCycle_Reg', 'CellCycle', 'Mismatch_Repair', 'EMT2', 'Pan_F_TBRs', 'MDSC_Wang_et_al', 'CAF_Peng_et_al', 'TGFb_Family_Member_Li_et_al', 'T_cell_exhaustion_Peng_et_al', 'T_cell_regulatory_Peng_et_al', 'ICB_resistance_Peng_et_al', 'Glycolysis')
+pos_sig <- c('Pan_F_TBRs', 'EMT1', 'EMT2', 'EMT3')
+
+pset$group <- factor(pset$group, levels = c('Low', 'High'))
+
+res <- iobr_cor_plot(pdata_group           = pset,
+                   id1                   = "ID",
+                   feature_data          = eset_stad,
+                   id2                   = "ID",
+                   target                = NULL,
+                   group                 = "group",
+                   is_target_continuous  = FALSE,
+                   padj_cutoff           = 1,
+                   index                 = 2,
+                   category              = "gene",
+                   signature_group       = signature_collection[pos_sig],    
+                   ProjectID             = 'NK',
+                   palette_box           = "paired1",
+                   palette_corplot       = "pheatmap",
+                   palette_heatmap       = 4,
+                   feature_limit         = 26,
+                   character_limit       = 30,
+                   show_heatmap_col_name = FALSE,
+                   show_col              = FALSE,
+                   show_plot             = TRUE,
+                   path                  = paste0("2-relevant-genes"))
+
+# wd <- '/Volumes/BiologyFish/Data/ZxProjects/COAD/20230824_CellDeathDis_MPLCs/01_preprocessing/50_IOBR'
+# outdir <- file.path(wd, 'immune_IOBR')
+# 
+# write_xlsx(res, file.path(outdir, paste0('2_rel_genes.xlsx')))
+
+```
+
+
+
+# 6. GSEA scores between low and high groups
+## 6.1 CD_8_T_effector expression between low and high groups
+```{r}
+boxplot <- sig_res_join %>% 
+  select(ID, group, CD_8_T_effector)
+
+summary(boxplot[boxplot$group=="Low",]$CD_8_T_effector)
+summary(boxplot[boxplot$group=="High",]$CD_8_T_effector)
+
+wilcox.test(boxplot[boxplot$group=="Low",]$CD_8_T_effector,boxplot[boxplot$group=="High",]$CD_8_T_effector)
+
+```
+
+```{r}
+boxplot$group = factor(boxplot$group, levels=c('Low', 'High'))
+
+pdf("20231114_TPM_CD_8_T_effector_boxplot_v1.pdf",height=5,width=5)
+ggplot(boxplot,aes(x=group,y=CD_8_T_effector,color=factor(group)))+
+  # geom_violin(width=0.45)+
+  geom_boxplot(width=0.3)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.3, y=median(boxplot[boxplot$group=="Low",]$CD_8_T_effector), label=sprintf("%0.2f", median(boxplot[boxplot$group=="Low",]$CD_8_T_effector)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.3, y=median(boxplot[boxplot$group=="High",]$CD_8_T_effector), label=sprintf("%0.2f", median(boxplot[boxplot$group=="High",]$CD_8_T_effector)), color = "#dc143c", size = 6)+
+  # scale_y_log10()+
+  # ylim(0,6.5)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "CD_8_T_effector")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "Signature score")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 6.2 Immune_Checkpoint expression between low and high groups
+```{r}
+boxplot <- sig_res_join %>% 
+  select(ID, group, Immune_Checkpoint)
+
+summary(boxplot[boxplot$group=="Low",]$Immune_Checkpoint)
+summary(boxplot[boxplot$group=="High",]$Immune_Checkpoint)
+
+wilcox.test(boxplot[boxplot$group=="Low",]$Immune_Checkpoint,boxplot[boxplot$group=="High",]$Immune_Checkpoint)
+
+```
+
+```{r}
+boxplot$group = factor(boxplot$group, levels=c('Low', 'High'))
+
+pdf("20231114_TPM_Immune_Checkpoint_boxplot_v1.pdf",height=5,width=5)
+ggplot(boxplot,aes(x=group,y=Immune_Checkpoint,color=factor(group)))+
+  #geom_violin(width=0.45)+
+  geom_boxplot(width=0.3)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.3, y=median(boxplot[boxplot$group=="Low",]$Immune_Checkpoint), label=sprintf("%0.2f", median(boxplot[boxplot$group=="Low",]$Immune_Checkpoint)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.3, y=median(boxplot[boxplot$group=="High",]$Immune_Checkpoint), label=sprintf("%0.2f", median(boxplot[boxplot$group=="High",]$Immune_Checkpoint)), color = "#dc143c", size = 6)+
+  # scale_y_log10()+
+  # ylim(0,6.5)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "Immune_Checkpoint")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "Signature score")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 6.3 Pan_F_TBRs expression between low and high groups
+```{r}
+boxplot <- sig_res_join %>% 
+  select(ID, group, Pan_F_TBRs)
+
+summary(boxplot[boxplot$group=="Low",]$Pan_F_TBRs)
+summary(boxplot[boxplot$group=="High",]$Pan_F_TBRs)
+
+wilcox.test(boxplot[boxplot$group=="Low",]$Pan_F_TBRs,boxplot[boxplot$group=="High",]$Pan_F_TBRs)
+
+```
+
+```{r}
+boxplot$group = factor(boxplot$group, levels=c('Low', 'High'))
+
+pdf("20231114_TPM_Pan_F_TBRs_boxplot_v1.pdf",height=5,width=5)
+ggplot(boxplot,aes(x=group,y=Pan_F_TBRs,color=factor(group)))+
+  #geom_violin(width=0.45)+
+  geom_boxplot(width=0.3)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.3, y=median(boxplot[boxplot$group=="Low",]$Pan_F_TBRs), label=sprintf("%0.2f", median(boxplot[boxplot$group=="Low",]$Pan_F_TBRs)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.3, y=median(boxplot[boxplot$group=="High",]$Pan_F_TBRs), label=sprintf("%0.2f", median(boxplot[boxplot$group=="High",]$Pan_F_TBRs)), color = "#dc143c", size = 6)+
+  # scale_y_log10()+
+  # ylim(0,6.5)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "Pan_F_TBRs")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "Signature score")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 6.4 EMT1 expression between low and high groups
+```{r}
+boxplot <- sig_res_join %>% 
+  select(ID, group, EMT1)
+
+summary(boxplot[boxplot$group=="Low",]$EMT1)
+summary(boxplot[boxplot$group=="High",]$EMT1)
+
+wilcox.test(boxplot[boxplot$group=="Low",]$EMT1,boxplot[boxplot$group=="High",]$EMT1)
+
+```
+
+```{r}
+boxplot$group = factor(boxplot$group, levels=c('Low', 'High'))
+
+pdf("20231114_TPM_EMT1_boxplot_v1.pdf",height=5,width=5)
+ggplot(boxplot,aes(x=group,y=EMT1,color=factor(group)))+
+  #geom_violin(width=0.45)+
+  geom_boxplot(width=0.3)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.3, y=median(boxplot[boxplot$group=="Low",]$EMT1), label=sprintf("%0.2f", median(boxplot[boxplot$group=="Low",]$EMT1)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.3, y=median(boxplot[boxplot$group=="High",]$EMT1), label=sprintf("%0.2f", median(boxplot[boxplot$group=="High",]$EMT1)), color = "#dc143c", size = 6)+
+  # scale_y_log10()+
+  # ylim(0,6.5)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "EMT1")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "Signature score")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 6.5 EMT2 expression between low and high groups
+```{r}
+boxplot <- sig_res_join %>% 
+  select(ID, group, EMT2)
+
+summary(boxplot[boxplot$group=="Low",]$EMT2)
+summary(boxplot[boxplot$group=="High",]$EMT2)
+
+wilcox.test(boxplot[boxplot$group=="Low",]$EMT2,boxplot[boxplot$group=="High",]$EMT2)
+
+```
+
+```{r}
+boxplot$group = factor(boxplot$group, levels=c('Low', 'High'))
+
+pdf("20231114_TPM_EMT2_boxplot_v1.pdf",height=5,width=5)
+ggplot(boxplot,aes(x=group,y=EMT2,color=factor(group)))+
+  #geom_violin(width=0.45)+
+  geom_boxplot(width=0.3)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.3, y=median(boxplot[boxplot$group=="Low",]$EMT2), label=sprintf("%0.2f", median(boxplot[boxplot$group=="Low",]$EMT2)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.3, y=median(boxplot[boxplot$group=="High",]$EMT2), label=sprintf("%0.2f", median(boxplot[boxplot$group=="High",]$EMT2)), color = "#dc143c", size = 6)+
+  # scale_y_log10()+
+  # ylim(0,6.5)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "EMT2")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "Signature score")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 6.6 EMT3 expression between low and high groups
+```{r}
+boxplot <- sig_res_join %>% 
+  select(ID, group, EMT3)
+
+summary(boxplot[boxplot$group=="Low",]$EMT3)
+summary(boxplot[boxplot$group=="High",]$EMT3)
+
+wilcox.test(boxplot[boxplot$group=="Low",]$EMT3,boxplot[boxplot$group=="High",]$EMT3)
+
+```
+
+```{r}
+boxplot$group = factor(boxplot$group, levels=c('Low', 'High'))
+
+pdf("20231114_TPM_EMT3_boxplot_v1.pdf",height=5,width=5)
+ggplot(boxplot,aes(x=group,y=EMT3,color=factor(group)))+
+  #geom_violin(width=0.45)+
+  geom_boxplot(width=0.3)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.3, y=median(boxplot[boxplot$group=="Low",]$EMT3), label=sprintf("%0.2f", median(boxplot[boxplot$group=="Low",]$EMT3)), color = "#0000ff", size = 6)+
+  annotate("text", x=2.3, y=median(boxplot[boxplot$group=="High",]$EMT3), label=sprintf("%0.2f", median(boxplot[boxplot$group=="High",]$EMT3)), color = "#dc143c", size = 6)+
+  # scale_y_log10()+
+  # ylim(0,6.5)+
+  theme_classic()+theme(legend.position="NA")+
+  # scale_fill_manual(values=c("#2ca9e1", "#e597b2"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "EMT3")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "Signature score")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+

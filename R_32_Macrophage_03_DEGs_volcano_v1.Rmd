@@ -1,0 +1,85 @@
+ ---
+title: "diff clusters in Macrophage cell"
+author: "Wei"
+date: '2023-11-13'
+output:
+html_document: default
+---
+
+# 1. loading library and function
+```{r}
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(ggrepel))
+suppressPackageStartupMessages(library(ggpubr))
+suppressPackageStartupMessages(library(ggpmisc))
+options(dplyr.summarise.inform = FALSE)
+
+```
+
+# 2. loading data
+```{r}
+diff_csv <- read.csv("/Users/xuewei/ZxProjects/CRC/2023_GSE231559/01_preprocessing/32_Macrophage_Figures/32_diff_1_res_Mph-EEF1G_df.csv", h = T, check.names = F, row.names=1)
+lasso_res_gene <- read.csv("/Users/xuewei/ZxProjects/CRC/2023_GSE231559/01_preprocessing/32_Macrophage_Figures/Rds_02_Lasso_Cox_02_lasso_res.txt", sep = "\t", h = T, check.names = F)
+
+```
+
+# 3. data processing
+## 3.1 replace NA
+```{r}
+diff_csv2 <- diff_csv %>% 
+  filter(!is.na(logfoldchanges))
+
+```
+
+## 3.2 slecet significant genes
+```{r}
+diff_csv3 <- diff_csv2 %>% 
+  dplyr::mutate(Type = case_when(logfoldchanges >= 1 & pvals_adj < 0.05 ~ "Up",
+                                 logfoldchanges <= -1 & pvals_adj < 0.05 ~ "Down",
+                                 TRUE ~ "Other")) %>% 
+  filter(str_detect(Type, "Up|Down"))
+write.table(diff_csv3, file="Rds_03_diff_log2FC1_v1.txt", sep = "\t", quote=F, row.names = F)
+
+```
+
+
+# 4. plot volcano
+```{r}
+data_volcano <- diff_csv2 %>%
+  dplyr::select(names, logfoldchanges, pvals_adj) %>%
+  dplyr::mutate(Type = case_when(logfoldchanges >= 1 & pvals_adj < 0.05 ~ "Up",
+                                 logfoldchanges <= -1 & pvals_adj < 0.05 ~ "Down",
+                                 TRUE ~ "Other"))
+data_volcano$Type=factor(data_volcano$Type, levels=c('Up', 'Down', 'Other'))
+
+# pointsToLabel <- c(diff_csv3$names)
+# pointsToLabel <- c('HAVCR2', 'PDCD1', 'LAG3', 'TIGIT', 'ITGAE', 'FOS', 'IL7R', 'GPR183', 'MYADM', 'PBXIP1')
+pointsToLabel <- lasso_res_gene$gene
+
+pdf("20231110_03_Macrophage_DEGs_volcano_v1.pdf",height=5, width=5)
+ggplot(data_volcano,aes(logfoldchanges, -log10(pvals_adj)))+
+  geom_point(aes(color=factor(Type)),alpha=1, size=1.5)+
+  geom_point(color="#4b0082", data = subset(data_volcano, names %in% pointsToLabel),size=3,shape=19)+
+  geom_text_repel(aes(label=names, color=Type),data = subset(data_volcano, names %in% pointsToLabel, ),force=10,nudge_y=30,nudge_x=10,show.legend = FALSE, color="#4b0082")+
+  geom_vline(xintercept=-1,color="#666666",linetype=5)+
+  geom_vline(xintercept=1,color="#666666",linetype=5)+
+  scale_color_manual(values=c('#ea61ac', '#4cb4ff', "#CCCCCC"))+
+  xlim(-6,6)+
+  theme_classic()+
+  theme(legend.title = element_blank(), legend.position = "right",
+        legend.text = element_text(size = 10, color = "black"))+
+  # theme(legend.text = element_text(size = 15, color = "black"))
+  labs(title = "") +
+  xlab(label = "log2 (Fold Change)")+ylab(label = "-log10 (adj.Pvalue)") +
+  theme(axis.line = element_line(size=0.5,colour="black")) +
+  theme(plot.title = element_text(hjust = 0.5, face="bold", color="black", size=15)) +
+  theme(axis.ticks = element_line(size=0.5,colour="black"), axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="plain", color="black", size=15, angle=0),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold", color="black", size=15))
+dev.off()
+
+```
+

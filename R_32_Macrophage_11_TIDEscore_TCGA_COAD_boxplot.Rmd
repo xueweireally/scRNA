@@ -1,0 +1,326 @@
+---
+title: "MDSC of copper related genes in COAD"
+author: "COAD"
+date: '2023-11-14'
+output:
+html_document: default
+---
+
+# 1. loading library and function
+```{r}
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(cowplot))
+suppressPackageStartupMessages(library(RColorBrewer))
+suppressPackageStartupMessages(library(ggbeeswarm))
+suppressPackageStartupMessages(library(pacman))
+pacman::p_load(tidyverse,ggpubr,rstatix,ggsci,ggsignif,reshape2)
+suppressPackageStartupMessages(library(tidyverse))
+options(dplyr.summarise.inform = FALSE)
+
+```
+
+# 2. loading data
+```{r}
+# COAD TIDEscore
+COAD_TIDEscore <- read.table("/Users/xuewei/ZuDatabase/Rdata/TIDEscore/Tumor_Dysf_Excl_scores/TCGA.COADREAD.RNASeq.norm_subtract.OS_base", sep = "\t", h=T, check.names = F)
+
+# Group
+group_type <- read.table("/Users/xuewei/ZxProjects/CRC/2023_GSE231559/01_preprocessing/32_Macrophage_Figures/Rds_02_Lasso_Cox_04_risk_group_surv.txt", sep = "\t", h = T, check.names = F)
+
+```
+
+# 3. Data process
+## 3.1 select samples in TCGA-COAD group_type
+```{r}
+# # select Tumor samples
+# Group_sample2 <- Group_sample %>%
+#   filter(str_detect(Group, "Tumor"))
+
+# select sample in group_type
+group_type2 <- group_type %>%
+  select(sample_id, risk_group) %>%
+  mutate(Status = str_replace_all(risk_group, "high_risk", "High")) %>%
+  mutate(Status = str_replace_all(Status, "low_risk", "Low")) %>%
+  select(sample_id, Status)
+group_type2$pid <- substr(group_type2$sample_id, 1, 12)
+
+```
+
+## 3.2 join Group and TIDEscore
+```{r}
+# COAD_TIDEscore
+COAD_TIDEscore <- COAD_TIDEscore %>% 
+  mutate(TIDE = Exclusion + Exclusion)
+# join TIDE and Group
+COAD_TIDEscore <- COAD_TIDEscore %>% 
+  rownames_to_column(var = 'pid')
+TIDEscore_Group <- COAD_TIDEscore %>% 
+  left_join(group_type2, c("pid" = "pid"))
+TIDEscore_Group <- na.omit(TIDEscore_Group)
+
+```
+
+## 3.3 MDSC, CAF, M2, Exclusion and Dysfunction
+```{r}
+# MDSC
+TIDEscore_MDSC <- TIDEscore_Group %>% 
+  select(sample_id, MDSC, Status) %>% 
+  distinct()
+summary(TIDEscore_MDSC[TIDEscore_MDSC$Status=="Low",]$MDSC)
+summary(TIDEscore_MDSC[TIDEscore_MDSC$Status=="High",]$MDSC)
+wilcox.test(TIDEscore_MDSC[TIDEscore_MDSC$Status=="Low",]$MDSC,TIDEscore_MDSC[TIDEscore_MDSC$Status=="High",]$MDSC)
+
+# CAF
+TIDEscore_CAF <- TIDEscore_Group %>% 
+  select(sample_id, CAF, Status) %>% 
+  distinct()
+summary(TIDEscore_CAF[TIDEscore_CAF$Status=="Low",]$CAF)
+summary(TIDEscore_CAF[TIDEscore_CAF$Status=="High",]$CAF)
+wilcox.test(TIDEscore_CAF[TIDEscore_CAF$Status=="Low",]$CAF,TIDEscore_CAF[TIDEscore_CAF$Status=="High",]$CAF)
+
+# M2
+TIDEscore_M2 <- TIDEscore_Group %>% 
+  select(sample_id, M2, Status) %>% 
+  distinct()
+summary(TIDEscore_M2[TIDEscore_M2$Status=="Low",]$M2)
+summary(TIDEscore_M2[TIDEscore_M2$Status=="High",]$M2)
+wilcox.test(TIDEscore_M2[TIDEscore_M2$Status=="Low",]$M2,TIDEscore_M2[TIDEscore_M2$Status=="High",]$M2)
+
+# Exclusion
+TIDEscore_Exclusion <- TIDEscore_Group %>% 
+  select(sample_id, Exclusion, Status) %>% 
+  distinct()
+summary(TIDEscore_Exclusion[TIDEscore_Exclusion$Status=="Low",]$Exclusion)
+summary(TIDEscore_Exclusion[TIDEscore_Exclusion$Status=="High",]$Exclusion)
+wilcox.test(TIDEscore_Exclusion[TIDEscore_Exclusion$Status=="Low",]$Exclusion,TIDEscore_Exclusion[TIDEscore_Exclusion$Status=="High",]$Exclusion)
+
+# Dysfunction
+TIDEscore_Dysfunction <- TIDEscore_Group %>% 
+  select(sample_id, Dysfunction, Status) %>% 
+  distinct()
+summary(TIDEscore_Dysfunction[TIDEscore_Dysfunction$Status=="Low",]$Dysfunction)
+summary(TIDEscore_Dysfunction[TIDEscore_Dysfunction$Status=="High",]$Dysfunction)
+wilcox.test(TIDEscore_Dysfunction[TIDEscore_Dysfunction$Status=="Low",]$Dysfunction,TIDEscore_Dysfunction[TIDEscore_Dysfunction$Status=="High",]$Dysfunction)
+
+# TIDEscore
+TIDEscore_TIDE <- TIDEscore_Group %>% 
+  select(sample_id, TIDE, Status) %>% 
+  distinct()
+summary(TIDEscore_TIDE[TIDEscore_TIDE$Status=="Low",]$TIDE)
+summary(TIDEscore_TIDE[TIDEscore_TIDE$Status=="High",]$TIDE)
+wilcox.test(TIDEscore_TIDE[TIDEscore_TIDE$Status=="Low",]$TIDE,TIDEscore_TIDE[TIDEscore_TIDE$Status=="High",]$TIDE)
+
+```
+
+
+# 4. boxplot of TIDE score
+## 4.1 TIDEscore_MDSC
+```{r}
+TIDEscore_MDSC$Status <- factor(TIDEscore_MDSC$Status, levels=c("Low", "High"))
+
+pdf("20231114_32_Macrophage_11_TIDEscore_TIDEscore_MDSC_v1.pdf",height=5,width=5)
+ggplot(TIDEscore_MDSC,aes(x=Status,y=MDSC,fill=factor(Status),color=factor(Status)))+
+  geom_violin(width=0.45, size=1)+
+  geom_boxplot(width=0.1, size=1)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.45, y=median(TIDEscore_MDSC[TIDEscore_MDSC$Status=="Low",]$MDSC), label=sprintf("%0.3f", median(TIDEscore_MDSC[TIDEscore_MDSC$Status=="Low",]$MDSC)), color = "#000000", size = 6)+
+  annotate("text", x=2.41, y=median(TIDEscore_MDSC[TIDEscore_MDSC$Status=="High",]$MDSC), label=sprintf("%0.3f", median(TIDEscore_MDSC[TIDEscore_MDSC$Status=="High",]$MDSC)), color = "#000000", size = 6)+
+  #scale_y_log10()+
+  # ylim(-0.21, 0.21)+
+  theme_classic()+theme(legend.position="NA")+
+  scale_fill_manual(values=c("#FFFFFF", "#FFFFFF"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "MDSC")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "MDSC score")+
+  theme(axis.line=element_line(linewidth=0.5,colour="black"))+
+  theme(axis.ticks=element_line(linewidth=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 4.2 TIDEscore_CAF
+```{r}
+TIDEscore_CAF$Status <- factor(TIDEscore_CAF$Status, levels=c("Low", "High"))
+
+pdf("20231114_32_Macrophage_11_TIDEscore_TIDEscore_CAF_v1.pdf",height=5,width=5)
+ggplot(TIDEscore_CAF,aes(x=Status,y=CAF,fill=factor(Status),color=factor(Status)))+
+  geom_violin(width=0.45, size=1)+
+  geom_boxplot(width=0.1, size=1)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.43, y=median(TIDEscore_CAF[TIDEscore_CAF$Status=="Low",]$CAF), label=sprintf("%0.3f", median(TIDEscore_CAF[TIDEscore_CAF$Status=="Low",]$CAF)), color = "#000000", size = 6)+
+  annotate("text", x=2.39, y=median(TIDEscore_CAF[TIDEscore_CAF$Status=="High",]$CAF), label=sprintf("%0.3f", median(TIDEscore_CAF[TIDEscore_CAF$Status=="High",]$CAF)), color = "#000000", size = 6)+
+  #scale_y_log10()+
+  # ylim(-0.15,0.36)+
+  theme_classic()+theme(legend.position="NA")+
+  scale_fill_manual(values=c("#FFFFFF", "#FFFFFF"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "CAF")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "CAF score")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 4.3 TIDEscore_M2
+```{r}
+TIDEscore_M2$Status <- factor(TIDEscore_M2$Status, levels=c("Low", "High"))
+
+pdf("20231114_32_Macrophage_11_TIDEscore_TIDEscore_M2_v1.pdf",height=5,width=5)
+ggplot(TIDEscore_M2,aes(x=Status,y=M2,fill=factor(Status),color=factor(Status)))+
+  geom_violin(width=0.45, size=1)+
+  geom_boxplot(width=0.1, size=1)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.41, y=median(TIDEscore_M2[TIDEscore_M2$Status=="Low",]$M2), label=sprintf("%0.3f", median(TIDEscore_M2[TIDEscore_M2$Status=="Low",]$M2)), color = "#000000", size = 6)+
+  annotate("text", x=2.41, y=median(TIDEscore_M2[TIDEscore_M2$Status=="High",]$M2), label=sprintf("%0.3f", median(TIDEscore_M2[TIDEscore_M2$Status=="High",]$M2)), color = "#000000", size = 6)+
+  #scale_y_log10()+
+  # ylim(-0.15,0.1)+
+  theme_classic()+theme(legend.position="NA")+
+  scale_fill_manual(values=c("#FFFFFF", "#FFFFFF"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "M2")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "M2 score")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 4.4 TIDEscore_Exclusion
+```{r}
+TIDEscore_Exclusion$Status <- factor(TIDEscore_Exclusion$Status, levels=c("Low", "High"))
+
+pdf("20231114_32_Macrophage_11_TIDEscore_TIDEscore_Exclusion_v1.pdf",height=5,width=5)
+ggplot(TIDEscore_Exclusion,aes(x=Status,y=Exclusion,fill=factor(Status),color=factor(Status)))+
+  geom_violin(width=0.45, size=1)+
+  geom_boxplot(width=0.1, size=1)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,
+              test=t.test,
+              step_increase=0.1,
+              color="#000000")+
+  annotate("text", x=1.42, y=median(TIDEscore_Exclusion[TIDEscore_Exclusion$Status=="Low",]$Exclusion), label=sprintf("%0.3f", median(TIDEscore_Exclusion[TIDEscore_Exclusion$Status=="Low",]$Exclusion)), color = "#000000", size = 6)+
+  annotate("text", x=2.41, y=median(TIDEscore_Exclusion[TIDEscore_Exclusion$Status=="High",]$Exclusion), label=sprintf("%0.3f", median(TIDEscore_Exclusion[TIDEscore_Exclusion$Status=="High",]$Exclusion)), color = "#000000", size = 6)+
+  #scale_y_log10()+
+  # ylim(-0.21,0.15)+
+  theme_classic()+theme(legend.position="NA")+
+  scale_fill_manual(values=c("#FFFFFF", "#FFFFFF"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "Exclusion")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "Exclusion score")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 4.5 TIDEscore_Dysfunction
+```{r}
+TIDEscore_Dysfunction$Status <- factor(TIDEscore_Dysfunction$Status, levels=c("Low", "High"))
+
+pdf("20231114_32_Macrophage_11_TIDEscore_TIDEscore_Dysfunction_v1.pdf",height=5,width=5)
+ggplot(TIDEscore_Dysfunction,aes(x=Status,y=Dysfunction,fill=factor(Status),color=factor(Status)))+
+  geom_violin(width=0.45, size=1)+
+  geom_boxplot(width=0.1, size=1)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,test=wilcox.test,step_increase=0.1,color="#000000")+
+  annotate("text", x=1.41, y=median(TIDEscore_Dysfunction[TIDEscore_Dysfunction$Status=="Low",]$Dysfunction), label=sprintf("%0.2f", median(TIDEscore_Dysfunction[TIDEscore_Dysfunction$Status=="Low",]$Dysfunction)), color = "#000000", size = 6)+
+  annotate("text", x=2.41, y=median(TIDEscore_Dysfunction[TIDEscore_Dysfunction$Status=="High",]$Dysfunction), label=sprintf("%0.2f", median(TIDEscore_Dysfunction[TIDEscore_Dysfunction$Status=="High",]$Dysfunction)), color = "#000000", size = 6)+
+  #scale_y_log10()+
+  # ylim(-0.25,0.3)+
+  theme_classic()+theme(legend.position="NA")+
+  scale_fill_manual(values=c("#FFFFFF", "#FFFFFF"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "Dysfunction")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "Dysfunction score")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
+## 4.6 TIDEscore_TIDE
+```{r}
+TIDEscore_TIDE$Status <- factor(TIDEscore_TIDE$Status, levels=c("Low", "High"))
+
+pdf("20231114_32_Macrophage_11_TIDEscore_TIDEscore_TIDE_v1.pdf",height=5,width=5)
+ggplot(TIDEscore_TIDE,aes(x=Status,y=TIDE,fill=factor(Status),color=factor(Status)))+
+  geom_violin(width=0.45, size=1)+
+  geom_boxplot(width=0.1, size=1)+
+  scale_y_continuous(expand = ggplot2::expansion(mult = c(0.1, 0.1)))+
+  #geom_quasirandom(width=0.1)+
+  geom_signif(comparisons = list(c("Low", "High")),
+              map_signif_level=F,
+              textsize=6,
+              test=t.test,
+              step_increase=0.1,
+              color="#000000")+
+  annotate("text", x=1.40, y=median(TIDEscore_TIDE[TIDEscore_TIDE$Status=="Low",]$TIDE), label=sprintf("%0.2f", median(TIDEscore_TIDE[TIDEscore_TIDE$Status=="Low",]$TIDE)), color = "#000000", size = 6)+
+  annotate("text", x=2.41, y=median(TIDEscore_TIDE[TIDEscore_TIDE$Status=="High",]$TIDE), label=sprintf("%0.2f", median(TIDEscore_TIDE[TIDEscore_TIDE$Status=="High",]$TIDE)), color = "#000000", size = 6)+
+  #scale_y_log10()+
+  # ylim(-0.41,0.3)+
+  theme_classic()+theme(legend.position="NA")+
+  scale_fill_manual(values=c("#FFFFFF", "#FFFFFF"))+
+  scale_color_manual(values=c("#0000ff", "#dc143c"))+
+  labs(title = "TIDE score")+
+  theme(panel.grid = element_blank(),axis.title = element_text(size = 15))+
+  theme(plot.title = element_text(face="bold", color="black", size=20, hjust = 0.5))+
+  xlab(label = NULL)+ylab(label = "TIDE score")+
+  theme(axis.line=element_line(size=0.5,colour="black"))+
+  theme(axis.ticks=element_line(size=0.5,colour="black"),axis.ticks.length=unit(0.5,"lines"))+
+  theme(axis.text.x = element_text(face="bold", color="black", size=15),
+        axis.text.y = element_text(face="bold", color="black", size=15),
+        axis.title.x = element_text(face="bold", color="black", size=15),
+        axis.title.y = element_text(face="bold",color="black", size=15))
+dev.off()
+
+```
+
